@@ -1,7 +1,7 @@
 export const DESIGN_WIDTH  = 960
 export const DESIGN_HEIGHT = 540
-export const PROTOTYPE_NAME = '009-sort-lab'
-export const ACTIVE_SCENE   = 'SortLabScene'
+export const PROTOTYPE_NAME = '010-cozy-maze'
+export const ACTIVE_SCENE   = 'CozyMazeScene'
 
 // Aliases for backward compatibility with existing prototypes
 export const GAME_WIDTH  = DESIGN_WIDTH

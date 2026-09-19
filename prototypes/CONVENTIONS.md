@@ -244,7 +244,8 @@ this.input.on('wheel', (_p, _o, _dx, deltaY) => {
 | 007 | Sokoban DNA | `SokobanScene` |
 | 008 | Block Placement | `BlockPlacementScene` |
 | 009 | Sort Lab | `SortLabScene` |
-| **010** | **next** | — |
+| 010 | Cozy Maze | `CozyMazeScene` |
+| **011** | **next** | — |
 
 ---
 

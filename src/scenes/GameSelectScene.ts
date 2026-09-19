@@ -72,6 +72,13 @@ const PROTOTYPES: ProtoEntry[] = [
     description: 'Five sorting rules — which creates the most interesting decisions?',
     color: 0x44ffaa,
   },
+  {
+    key: 'CozyMazeScene',
+    number: '010',
+    name: 'Cozy Maze',
+    description: 'A living garden maze — find the key, open the gate, escape',
+    color: 0x7ad4a0,
+  },
 ]
 
 export class GameSelectScene extends Phaser.Scene {
