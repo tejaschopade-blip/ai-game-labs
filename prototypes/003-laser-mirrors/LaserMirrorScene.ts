@@ -147,6 +147,12 @@ export class LaserMirrorScene extends Phaser.Scene {
     this.vfx = new VFXManager(this)
     this.gfx = this.add.graphics()
 
+    this.overlay.addWatch('Level',   () => `${this.levelIndex + 1} / ${LEVELS.length}`)
+    this.overlay.addWatch('Status',  () => this.won ? 'solved ✓' : 'active')
+    this.overlay.addWatch('Mirrors', () =>
+      this.mirrorTypes.map(m => m === Mirror.Slash ? '/' : '\\').join(' ')
+    )
+
     this.setupLayout()
     this.loadLevel()
     this.scale.on('resize', () => { this.setupLayout(); this.redraw() })

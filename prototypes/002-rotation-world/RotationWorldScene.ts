@@ -51,6 +51,9 @@ export class RotationWorldScene extends Phaser.Scene {
 
     this.keys = new InputManager(this)
     this.debug = new DebugOverlay(this, PROTO)
+    this.debug.addWatch('Rotation', () => `${this.worldAngle}°`)
+    this.debug.addWatch('Player',   () => `(${this.playerCol}, ${this.playerRow})`)
+    this.debug.addWatch('Status',   () => this.won ? 'won ✓' : this.animating ? 'rotating…' : 'ready')
 
     const cx = this.scale.width / 2
     const cy = this.scale.height / 2
