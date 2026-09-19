@@ -7,11 +7,12 @@ import { PrototypeScene } from '../scenes/PrototypeScene'
 import { FoundationTestScene } from '../../prototypes/001-foundation-test/FoundationTestScene'
 import { RotationWorldScene } from '../../prototypes/002-rotation-world/RotationWorldScene'
 import { LaserMirrorScene } from '../../prototypes/003-laser-mirrors/LaserMirrorScene'
+import { TimeEchoScene } from '../../prototypes/004-time-echo/TimeEchoScene'
 
 export const GameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
   backgroundColor: DesignTokens.color.bg,
-  scene: [BootScene, PreloadScene, PrototypeScene, FoundationTestScene, RotationWorldScene, LaserMirrorScene],
+  scene: [BootScene, PreloadScene, PrototypeScene, FoundationTestScene, RotationWorldScene, LaserMirrorScene, TimeEchoScene],
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
