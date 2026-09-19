@@ -9,4 +9,16 @@ export const AssetKeys = {
     sfx_success:    'shared_sfx_success',
     music_gameplay: 'shared_music_gameplay',
   },
+  // Prototype-specific keys — add entries here as real assets are introduced.
+  // Current prototypes use code-generated shapes and have no external asset keys.
+  prototypes: {
+    '001': {
+      // No external assets — all shapes are code-generated
+    },
+    '002': {
+      // Future keys when audio is added:
+      // sfx_rotate: '002_sfx_rotate',
+      // sfx_goal:   '002_sfx_goal',
+    },
+  },
 } as const

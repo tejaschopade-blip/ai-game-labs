@@ -43,3 +43,19 @@ ECS, dependency injection, custom physics, custom animation engine, custom UI fr
 multiplayer, networking, backend, save/cloud, analytics, localization, monetization,
 procedural content framework, asset database, editor tooling, plugin architecture,
 complex scene manager.
+
+## Asset Rules
+
+Before creating a new asset:
+1. Check shared assets (`assets/shared/`) first.
+2. Check the current prototype's assets (`assets/prototypes/<name>/`).
+3. Prefer an existing asset when appropriate.
+4. Use primitive shape placeholders when art is not blocking gameplay.
+5. Never block gameplay implementation waiting for art.
+6. Record new asset requirements in the prototype's `assets.md`.
+7. Record external asset source and license information in `assets.md`.
+8. Do not duplicate assets unnecessarily.
+9. Always use `AssetKeys` constants — never hardcode key strings in scenes.
+10. Load assets explicitly in `PreloadScene` — no automatic discovery.
+
+See `docs/asset-pipeline.md` for the full workflow.
