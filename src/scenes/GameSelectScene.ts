@@ -58,6 +58,13 @@ const PROTOTYPES: ProtoEntry[] = [
     description: 'Push boxes to goals — never pull. One mechanic, five puzzles.',
     color: 0xffaa44,
   },
+  {
+    key: 'BlockPlacementScene',
+    number: '008',
+    name: 'Block Placement',
+    description: 'Choose shapes, fill rows and columns, clear lines',
+    color: 0x44ccaa,
+  },
 ]
 
 export class GameSelectScene extends Phaser.Scene {

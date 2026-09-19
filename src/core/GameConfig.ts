@@ -11,12 +11,13 @@ import { TimeEchoScene } from '../../prototypes/004-time-echo/TimeEchoScene'
 import { ChainReactionScene } from '../../prototypes/005-chain-reaction/ChainReactionScene'
 import { StealPropertiesScene } from '../../prototypes/006-steal-properties/StealPropertiesScene'
 import { SokobanScene } from '../../prototypes/007-sokoban-dna/SokobanScene'
+import { BlockPlacementScene } from '../../prototypes/008-block-placement/BlockPlacementScene'
 import { GameSelectScene } from '../scenes/GameSelectScene'
 
 export const GameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
   backgroundColor: DesignTokens.color.bg,
-  scene: [BootScene, PreloadScene, GameSelectScene, PrototypeScene, FoundationTestScene, RotationWorldScene, LaserMirrorScene, TimeEchoScene, ChainReactionScene, StealPropertiesScene, SokobanScene],
+  scene: [BootScene, PreloadScene, GameSelectScene, PrototypeScene, FoundationTestScene, RotationWorldScene, LaserMirrorScene, TimeEchoScene, ChainReactionScene, StealPropertiesScene, SokobanScene, BlockPlacementScene],
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
