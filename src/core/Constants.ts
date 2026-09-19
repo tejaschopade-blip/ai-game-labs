@@ -1,7 +1,7 @@
 export const DESIGN_WIDTH  = 960
 export const DESIGN_HEIGHT = 540
-export const PROTOTYPE_NAME = '008-block-placement'
-export const ACTIVE_SCENE   = 'BlockPlacementScene'
+export const PROTOTYPE_NAME = '009-sort-lab'
+export const ACTIVE_SCENE   = 'SortLabScene'
 
 // Aliases for backward compatibility with existing prototypes
 export const GAME_WIDTH  = DESIGN_WIDTH

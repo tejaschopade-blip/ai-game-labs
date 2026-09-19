@@ -65,6 +65,13 @@ const PROTOTYPES: ProtoEntry[] = [
     description: 'Choose shapes, fill rows and columns, clear lines',
     color: 0x44ccaa,
   },
+  {
+    key: 'SortLabScene',
+    number: '009',
+    name: 'Sort Lab',
+    description: 'Five sorting rules — which creates the most interesting decisions?',
+    color: 0x44ffaa,
+  },
 ]
 
 export class GameSelectScene extends Phaser.Scene {
