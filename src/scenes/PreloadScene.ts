@@ -9,6 +9,6 @@ export class PreloadScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.scene.start('PrototypeScene')
+    this.scene.start('FoundationTestScene')
   }
 }
