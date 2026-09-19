@@ -1,5 +1,4 @@
 import Phaser from 'phaser'
-import { ACTIVE_SCENE } from '../core/Constants'
 
 export class PreloadScene extends Phaser.Scene {
   constructor() { super({ key: 'PreloadScene' }) }
@@ -10,6 +9,6 @@ export class PreloadScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.scene.start(ACTIVE_SCENE)
+    this.scene.start('GameSelectScene')
   }
 }

@@ -25,6 +25,15 @@ export class DebugOverlay {
       this.visible = !this.visible
       this.text.setVisible(this.visible)
     })
+
+    // ESC returns to game select menu
+    const escKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.ESC)
+    escKey.on('down', () => {
+      scene.cameras.main.fadeOut(200, 0, 0, 0)
+      scene.cameras.main.once('camerafadeoutcomplete', () => {
+        scene.scene.start('GameSelectScene')
+      })
+    })
   }
 
   // Register a watch: called every frame, value displayed in overlay
@@ -62,7 +71,7 @@ export class DebugOverlay {
     }
 
     lines.push('─────────────')
-    lines.push('R=restart  D=toggle')
+    lines.push('R=restart  D=toggle  ESC=menu')
 
     this.text.setText(lines)
   }
