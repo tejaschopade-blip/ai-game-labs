@@ -1,6 +1,7 @@
 # Prototype 010 — Cozy Maze Adventure
 
-**Phase 1 only.** Movement + one key + one gate + one exit. Everything else is deferred.
+**Phases 1–2.** Movement, key/gate/exit, plus a switch, a remote gate, a hidden route
+and an optional treasure. Everything else is deferred.
 
 ## Goal
 
@@ -45,35 +46,56 @@ and lets the player clip corners. The tile-anchored model cannot, by constructio
 
 ## The level — "The Garden Shortcut"
 
-19 × 11, 91 open tiles, all reachable.
+23 × 11, 69 open tiles, all reachable.
 
 ```
-###################
-#@....#.....#.....#
-#.###.#.###.#.###.#
-#.#...#.#.#.#.#...#
-#.#.###.#.#.#.#.###
-#...#...#...#.#...#
-###.#.###.###.###.#
-#...#.#...#.....#.#
-#.###.#.#.#####.#.#
-#.......#.......#.#
-###################
+#######################
+#.....###.....###...###
+#.###.###.###.###.#.###
+#.###.....#.#.....#.###
+#.#################.###
+#@###############...###
+#.###############.#.###
+#.###.###########.#.###
+#.###.###########.#...#
+#.................#####
+#######################
 ```
 
-- Player start `(1,1)` — top left
-- Key `(9,5)` — centre of the maze
-- Gate `(17,7)` — locked until the key is picked up
-- Exit `(17,9)` — bottom right, behind the gate
+| Object | Tile | Role |
+|---|---|---|
+| start | `(1,5)` | far left, between the two branches |
+| `switch1` | `(5,7)` | dead-end stub off the south corridor |
+| `rgate1` | `(9,9)` | vine gate blocking the south corridor |
+| `hidden1` | `(11,2)` | looks like hedge, is walkable |
+| `treasure1` | `(11,3)` | alcove reachable only through `hidden1` |
+| `key1` | `(19,5)` | where both branches converge |
+| `gate1` | `(19,7)` | wooden gate, opens with `key1` |
+| `exit1` | `(21,8)` | pocket behind `gate1` |
 
-**Verified properties** (checked with a throwaway BFS script during development):
+### Three routes
 
-- Key is reachable from the start *with the gate locked* — you can always get the key first.
-- Exit is reachable *with the gate open*.
-- Exit is **not** reachable with the gate locked — the gate is a genuine chokepoint, not decoration.
-- No orphaned open tiles.
+- **SAFE** — north zigzag. **34 tiles** to the key. Needs nothing, always open.
+- **SHORT** — south corridor. **26 tiles** to the key, but `rgate1` blocks it until you
+  detour to `switch1`. The detour costs 4 tiles round-trip, so the real saving is ~4 tiles.
+- **SECRET** — `hidden1` off the north route opens a treasure alcove. Purely optional.
 
-Optimal run is roughly 18 seconds.
+The gem is visible in its sealed alcove from the north corridor, which is the clue that
+a way in exists — per the spec's rule that a hidden path must never be unnoticeable.
+
+**Verified properties** (throwaway BFS + a headless movement sim, both run during development):
+
+- Dimensions exactly 23 × 11.
+- `switch1` reachable with both gates blocked.
+- Key reachable via SAFE with `rgate1` blocked (dist 34) — the switch is never mandatory.
+- Key reachable via SHORT with `rgate1` open (dist 26) — strictly shorter, saves 8 tiles.
+- Exit reachable with `gate1` open, **not** reachable with it blocked — still a genuine chokepoint.
+- Treasure unreachable when `hidden1` is treated as wall, reachable when passable.
+- No orphaned open tiles (69/69).
+- Movement sim: all three routes complete; the remote gate halts a southbound player at
+  `(8,9)` pre-switch; 60k-frame random-input fuzz never penetrates a wall or locked gate.
+
+Measured run times: SAFE **10.9s**, SHORT **9.8s** (detour included), SECRET **12.0s**.
 
 ## Design note: the ASCII holds topology only
 
@@ -82,16 +104,32 @@ in the `objects` array with an explicit grid position:
 
 ```ts
 objects: [
-  { id: 'key1',  kind: 'key',  pos: { col:  9, row: 5 } },
-  { id: 'gate1', kind: 'gate', pos: { col: 17, row: 7 }, opensWith: 'key1' },
-  { id: 'exit1', kind: 'exit', pos: { col: 17, row: 9 } },
+  { id: 'hidden1', kind: 'hidden', pos: { col: 11, row: 2 } },
+  { id: 'switch1', kind: 'switch', pos: { col:  5, row: 7 },
+    affects: [{ target: 'rgate1', effect: 'open' }] },
+  { id: 'gate1',   kind: 'gate',   pos: { col: 19, row: 7 }, opensWith: 'key1' },
 ]
 ```
 
-This is deliberate. Phases 2–5 add switches, guardians and relationships by extending
-`ObjectKind` and the object list — without touching the maze string or re-encoding
-entities as ASCII glyphs. `levelData.ts` imports nothing from Phaser, so level
-definitions stay testable and, later, generatable outside the runtime.
+This is deliberate, and Phase 2 is the proof it works: four new entity kinds and a
+relationship were added by extending `ObjectKind` and the object list. The only
+parser change was three lines — a `hidden` tile deletes itself from the wall set, so
+even a topology override lives in the objects array rather than as a new ASCII glyph.
+
+`levelData.ts` imports nothing from Phaser, so level definitions stay testable and,
+later, generatable outside the runtime.
+
+### Relationship model
+
+One step only:
+
+```ts
+interface Relation { target: string; effect: 'open' | 'close' }
+```
+
+`switch1 → opens → rgate1`. No chains, no conditions, no effect interpreter. The
+original spec asks for 70% one-step interactions, and multi-step chains
+(switch → water → vine → shortcut) are Phase 5 work.
 
 ## Files
 
@@ -100,21 +138,45 @@ definitions stay testable and, later, generatable outside the runtime.
 | `levelData.ts` | Types, `parseLevel`, `reachableFrom`, the level definition. Zero Phaser imports. |
 | `CozyMazeScene.ts` | Phaser runtime only. Contains no ASCII parsing. |
 
-## Phases 2–7 — deliberately NOT implemented
+## Phase 2 — implemented
+
+| Feature | Behaviour |
+|---|---|
+| **Switch** | Drive over it. Plate depresses, stone → amber, scale punch, burst. |
+| **Remote gate** | Vine gate across the maze. Opens when the switch fires. Unblocked as the animation starts so it never eats an input. |
+| **Treasure** | Optional gem in the secret alcove. No score, no stars — reported as found/missed at the end. |
+| **Hidden route** | Renders as hedge with pale-flower clues. Walking in fades it out and reveals the path. |
+
+**The remote cause → effect chain**, all on-screen at once since the maze needs no camera scrolling:
+
+```
+switch depresses → burst → travelling sparkle flies to the gate (520ms)
+    → vines retract (400ms) → burst → 4–6 leaves drift down
+```
+
+The travelling sparkle exists to lead the eye across the maze, and the falling leaves
+are the spec's own idiom for "the world changed over there". No text is used to
+explain it.
+
+The completion panel reports `Route: short|safe` and `Treasure: found|missed`.
+Route is recorded by **actual traversal of the remote gate tile**, not by whether the
+switch was flipped — a player can flip the switch and still walk the north route, and
+the traversal is the honest measure of which route was taken.
+
+## Phases 3–7 — deliberately NOT implemented
 
 Listed so the current scope is unambiguous. None of this exists yet:
 
 - **Obstacles** — crumbling floor, moving log, snail, sleeping guardian, patrol guardian,
   one-way gate, rotating gate, vine wall, water current, wind garden, pushable crate,
-  pressure plate, weight plate, hidden path, fake wall, temporary bridge, teleporter pair,
+  pressure plate, weight plate, fake wall, temporary bridge, teleporter pair,
   mushroom bounce, growing hedge, flower bridge, curious bird, wandering sheep,
-  treasure mimic, falling leaves, water level, moving platform
+  treasure mimic, water level, moving platform
 - **Abilities** — Reverse, Dash, Reveal, Bridge, Freeze, Teleport
 - **Multi-state switches and relationship chains** (switch → water → vine → shortcut)
-- **Route splitting** — the current level has one route, not safe/risk/secret variants
 - **Level validator** — `reachableFrom` is a ~20-line dev helper, not a soft-lock detector
 - **AI level generation** and the **difficulty model**
-- **Collectibles / crystals / stars / rewards**
+- **Crystals / stars / coins / XP** — the treasure is a flag, not a score
 
 ## Architecture note
 
@@ -128,13 +190,28 @@ Note also that `docs/ai-rules.md` lists "procedural content framework" as explic
 of scope for Foundation V2. Phases 6–7 as originally specified would conflict with that
 and should be re-scoped before being built.
 
+## Known design risk — the shortcut margin is thin
+
+Measured: SAFE 10.9s, SHORT 9.8s including the switch detour. The shortcut saves 8
+tiles on paper but the detour costs 4 back, so the net payoff is about **1.1 seconds**.
+
+That may be too small for the decision to feel worth making. If playtesting shows
+players defaulting to the safe route and ignoring the switch entirely, the fix is to
+lengthen the north branch or shorten the switch detour — not to add another obstacle.
+Worth settling before any Phase 3 work, since the route decision is the thing the
+whole concept rests on.
+
 ## Experiment notes
 
 _(fill in after playing)_
 
 **Does continuous movement beat step-per-press in a maze?**
 
-**Does the remote gate opening read as cause → effect?**
+**Does the remote gate opening read as cause → effect without any text?**
+
+**Is the ~1.1s shortcut payoff enough to make the switch detour feel worth it?**
+
+**Did the visible-but-sealed gem make you look for a way in?**
 
 **Is one chokepoint enough tension, or does it need a second decision?**
 

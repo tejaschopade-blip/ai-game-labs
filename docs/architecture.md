@@ -36,22 +36,86 @@ To switch the active prototype, set `ACTIVE_SCENE` and `PROTOTYPE_NAME` in `src/
 | InputManager | `src/systems/InputManager.ts` | Semantic actions (MoveUp, PrimaryAction…) mapped to keyboard/pointer |
 | AudioManager | `src/systems/AudioManager.ts` | SFX + music with volume/mute control |
 | VFXManager | `src/systems/VFXManager.ts` | Screen shake, flash, burst particles, floating text, fade transitions |
-| AnimHelper | `src/systems/AnimHelper.ts` | Static helpers: fadeIn, scalePunch, bounce, pulse, shake, moveTo |
+| AnimHelper | `src/systems/AnimHelper.ts` | Static helpers: fadeIn, scalePunch, bounce, pulse, shake, moveTo, popIn/Out, slideIn/Out, float |
 | CameraManager | `src/systems/CameraManager.ts` | Follow, shake, zoom, bounds, fade in/out |
 | EventBus | `src/systems/EventBus.ts` | Loose pub/sub between systems |
-| UIFactory | `src/ui/UIFactory.ts` | Label, Button, Panel, ProgressBar, Toast |
+| UIFactory | `src/ui/UIFactory.ts` | Label, Button, Panel, ProgressBar, Toast, Icon |
 | DebugOverlay | `src/ui/DebugOverlay.ts` | FPS, scene, prototype, resolution, DPR, orientation, R=restart |
 | AssetKeys | `src/utils/AssetKeys.ts` | Typed asset key constants |
+| Layout *(V3)* | `src/systems/Layout.ts` | Responsive anchors + safe-area insets |
+| GameJuice *(V3)* | `src/systems/GameJuice.ts` | success/fail/collect/select/destroy/levelComplete feedback |
+| Shadow *(V3)* | `src/systems/Shadow.ts` | `addShadow()` — standalone drop shadow for flat primitives |
+| Background *(V3)* | `src/systems/Background.ts` | Gradient, pattern and ambient-mote atmosphere (Graphics only) |
+| Transitions *(V3)* | `src/systems/Transitions.ts` | Scene fadeIn/fadeOut/transitionTo |
 
 ---
 
 ## Resolution and scaling
 
-- **Design resolution:** 960 × 540 (defined in `Constants.ts`)
+- **Boot resolution:** 960 × 540 (defined in `Constants.ts`, applied by `GameConfig`)
 - **Scale mode:** `Phaser.Scale.FIT` — fills the viewport while preserving aspect ratio
 - **Auto center:** both axes
 - The debug overlay shows: Design, Canvas, Viewport, DPR, Orientation
-- To support portrait prototypes, create a scene with its own Phaser.Scale config or adjust `GameConfig` for that prototype
+- Per-prototype design space is opt-in — see **Mobile-first (V3)** below
+
+---
+
+## Mobile-first (Foundation V3)
+
+New prototypes target **portrait 1080 × 1920**, touch-first. Existing prototypes
+(001–010) were authored for landscape 960 × 540 and are **not retrofitted** — a
+global flip would leave them compiling while looking broken.
+
+Orientation is therefore declared **per prototype**, never globally:
+
+```ts
+import { applyPrototypeConfig } from '../../src/core/PrototypeConfig'
+
+create() {
+  applyPrototypeConfig(this, {
+    name: '011-example', sceneKey: 'ExampleScene', orientation: 'portrait',
+  })
+}
+```
+
+Phaser's scale config is fixed at boot, so this calls `scale.setGameSize()`.
+Resolution order: explicit `designWidth`/`designHeight` → `orientation` → leave
+unchanged. It returns early when the size already matches, so it never fires a
+needless resize. A scene that never calls it keeps whatever size is current —
+which is exactly why 001–010 are unaffected.
+
+Because game size persists across scene transitions, `GameSelectScene` calls
+`applyLandscapeDesign()` on entry; without it, returning from a portrait
+prototype would render the menu at 9:16.
+
+### Safe area
+
+`Layout` reads the CSS `env(safe-area-inset-*)` values through a probe element
+and converts them to logical units, combining them with a 2%-of-design-space
+floor so UI never sits flush to the edge even on desktop.
+
+> `index.html` must carry `viewport-fit=cover` in its viewport meta. Without it
+> iOS reports all insets as zero and notch handling silently does nothing.
+
+```ts
+const layout = new Layout(this)
+layout.center()             // { x, y }
+layout.safeTopCenter(24)    // inset-aware
+layout.safeRect             // { x, y, width, height }
+```
+
+### Presentation systems
+
+`GameJuice` composes VFXManager + AnimHelper + camera + AudioManager into
+`success` / `fail` / `collect` / `select` / `destroy` / `levelComplete`. Audio is
+optional throughout: a sound plays only when an `AudioManager` was supplied *and*
+the key is actually loaded, so the repo's zero audio assets are a no-op, not a
+crash.
+
+`addShadow()` returns a **standalone, caller-owned** Graphics. It never reparents
+the target or creates a Container — several prototypes redraw their Graphics
+wholesale on resize, and a shadow system that owned display-list structure would
+fight them. Reposition it with `setPosition()`, and `destroy()` it yourself.
 
 ---
 

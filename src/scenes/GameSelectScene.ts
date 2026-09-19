@@ -1,4 +1,5 @@
 import Phaser from 'phaser'
+import { applyLandscapeDesign } from '../core/PrototypeConfig'
 
 interface ProtoEntry {
   key: string
@@ -85,6 +86,10 @@ export class GameSelectScene extends Phaser.Scene {
   constructor() { super({ key: 'GameSelectScene' }) }
 
   create(): void {
+    // The game size persists across scene transitions, so a portrait prototype
+    // would leave the menu at portrait dimensions on ESC. No-op at 960x540.
+    applyLandscapeDesign(this)
+
     const W = this.scale.width
     const H = this.scale.height
     const cardW  = Math.min(480, W - 40)

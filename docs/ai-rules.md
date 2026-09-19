@@ -16,6 +16,9 @@
 10. **Prefer the smallest working implementation.** No over-engineering.
 11. **Explain architectural changes before making significant ones.** Do not silently redesign.
 12. **Avoid unnecessary npm packages.** Only add a dependency if it solves a real, recurring problem.
+13. **Mobile-first.** New prototypes default to portrait 1080 × 1920, touch-first and safe-area aware, declared via `applyPrototypeConfig()`. Keyboard stays supported for desktop testing, but do not make WASD the primary interaction. Existing prototypes are **not** retrofitted — never change the global design resolution.
+14. **Presentation: small but finished-feeling, not large but unfinished.** Fix hierarchy and spacing before reaching for effects. A prototype that reads clearly with no particles beats a busy one.
+15. **Extract a presentation system only when 2+ prototypes actually need it.** Same bar as rule 5 — capability added to an API with no callers is capability spent in the wrong place.
 
 ## What belongs in the foundation
 
