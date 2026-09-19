@@ -9,12 +9,13 @@ import { RotationWorldScene } from '../../prototypes/002-rotation-world/Rotation
 import { LaserMirrorScene } from '../../prototypes/003-laser-mirrors/LaserMirrorScene'
 import { TimeEchoScene } from '../../prototypes/004-time-echo/TimeEchoScene'
 import { ChainReactionScene } from '../../prototypes/005-chain-reaction/ChainReactionScene'
+import { StealPropertiesScene } from '../../prototypes/006-steal-properties/StealPropertiesScene'
 import { GameSelectScene } from '../scenes/GameSelectScene'
 
 export const GameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
   backgroundColor: DesignTokens.color.bg,
-  scene: [BootScene, PreloadScene, GameSelectScene, PrototypeScene, FoundationTestScene, RotationWorldScene, LaserMirrorScene, TimeEchoScene, ChainReactionScene],
+  scene: [BootScene, PreloadScene, GameSelectScene, PrototypeScene, FoundationTestScene, RotationWorldScene, LaserMirrorScene, TimeEchoScene, ChainReactionScene, StealPropertiesScene],
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,

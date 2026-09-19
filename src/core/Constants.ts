@@ -1,7 +1,7 @@
 export const DESIGN_WIDTH  = 960
 export const DESIGN_HEIGHT = 540
-export const PROTOTYPE_NAME = '005-chain-reaction'
-export const ACTIVE_SCENE   = 'ChainReactionScene'
+export const PROTOTYPE_NAME = '006-steal-properties'
+export const ACTIVE_SCENE   = 'StealPropertiesScene'
 
 // Aliases for backward compatibility with existing prototypes
 export const GAME_WIDTH  = DESIGN_WIDTH

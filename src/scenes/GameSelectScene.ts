@@ -44,6 +44,13 @@ const PROTOTYPES: ProtoEntry[] = [
     description: 'Tap one circle and trigger a cascading chain reaction',
     color: 0xff8844,
   },
+  {
+    key: 'StealPropertiesScene',
+    number: '006',
+    name: 'Steal Properties',
+    description: 'Touch objects to steal their property — gain new capabilities',
+    color: 0xff4422,
+  },
 ]
 
 export class GameSelectScene extends Phaser.Scene {
