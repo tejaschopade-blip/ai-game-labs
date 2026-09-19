@@ -1,7 +1,7 @@
 export const DESIGN_WIDTH  = 960
 export const DESIGN_HEIGHT = 540
-export const PROTOTYPE_NAME = '002-rotation-world'
-export const ACTIVE_SCENE   = 'RotationWorldScene'
+export const PROTOTYPE_NAME = '003-laser-mirrors'
+export const ACTIVE_SCENE   = 'LaserMirrorScene'
 
 // Aliases for backward compatibility with existing prototypes
 export const GAME_WIDTH  = DESIGN_WIDTH
