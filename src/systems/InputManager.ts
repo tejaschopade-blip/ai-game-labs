@@ -1,35 +1,52 @@
 import Phaser from 'phaser'
 
-export class InputManager {
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys
-  private wasd!: {
-    up: Phaser.Input.Keyboard.Key
-    down: Phaser.Input.Keyboard.Key
-    left: Phaser.Input.Keyboard.Key
-    right: Phaser.Input.Keyboard.Key
-  }
-  pointer!: Phaser.Input.Pointer
+export enum GameAction {
+  MoveUp          = 'MoveUp',
+  MoveDown        = 'MoveDown',
+  MoveLeft        = 'MoveLeft',
+  MoveRight       = 'MoveRight',
+  PrimaryAction   = 'PrimaryAction',
+  SecondaryAction = 'SecondaryAction',
+  Pause           = 'Pause',
+  Restart         = 'Restart',
+}
 
-  constructor(private scene: Phaser.Scene) {
+interface ActionBinding { keys: number[] }
+
+const DEFAULT_BINDINGS: Record<GameAction, ActionBinding> = {
+  [GameAction.MoveUp]:          { keys: [Phaser.Input.Keyboard.KeyCodes.W,     Phaser.Input.Keyboard.KeyCodes.UP]    },
+  [GameAction.MoveDown]:        { keys: [Phaser.Input.Keyboard.KeyCodes.S,     Phaser.Input.Keyboard.KeyCodes.DOWN]  },
+  [GameAction.MoveLeft]:        { keys: [Phaser.Input.Keyboard.KeyCodes.A,     Phaser.Input.Keyboard.KeyCodes.LEFT]  },
+  [GameAction.MoveRight]:       { keys: [Phaser.Input.Keyboard.KeyCodes.D,     Phaser.Input.Keyboard.KeyCodes.RIGHT] },
+  [GameAction.PrimaryAction]:   { keys: [Phaser.Input.Keyboard.KeyCodes.SPACE, Phaser.Input.Keyboard.KeyCodes.Z]    },
+  [GameAction.SecondaryAction]: { keys: [Phaser.Input.Keyboard.KeyCodes.X,     Phaser.Input.Keyboard.KeyCodes.SHIFT] },
+  [GameAction.Pause]:           { keys: [Phaser.Input.Keyboard.KeyCodes.ESC,   Phaser.Input.Keyboard.KeyCodes.P]    },
+  [GameAction.Restart]:         { keys: [Phaser.Input.Keyboard.KeyCodes.R]                                          },
+}
+
+export class InputManager {
+  private actionKeys = new Map<GameAction, Phaser.Input.Keyboard.Key[]>()
+  pointer: Phaser.Input.Pointer
+
+  constructor(scene: Phaser.Scene, bindings: Record<GameAction, ActionBinding> = DEFAULT_BINDINGS) {
     const kb = scene.input.keyboard!
-    this.cursors = kb.createCursorKeys()
-    this.wasd = {
-      up: kb.addKey(Phaser.Input.Keyboard.KeyCodes.W),
-      down: kb.addKey(Phaser.Input.Keyboard.KeyCodes.S),
-      left: kb.addKey(Phaser.Input.Keyboard.KeyCodes.A),
-      right: kb.addKey(Phaser.Input.Keyboard.KeyCodes.D),
+    for (const [action, binding] of Object.entries(bindings) as [GameAction, ActionBinding][]) {
+      this.actionKeys.set(action, binding.keys.map(k => kb.addKey(k)))
     }
     this.pointer = scene.input.activePointer
   }
 
-  get up(): boolean { return this.cursors.up.isDown || this.wasd.up.isDown }
-  get down(): boolean { return this.cursors.down.isDown || this.wasd.down.isDown }
-  get left(): boolean { return this.cursors.left.isDown || this.wasd.left.isDown }
-  get right(): boolean { return this.cursors.right.isDown || this.wasd.right.isDown }
-
-  isKeyDown(key: Phaser.Input.Keyboard.Key): boolean { return key.isDown }
-
-  addKey(keyCode: number): Phaser.Input.Keyboard.Key {
-    return this.scene.input.keyboard!.addKey(keyCode)
+  isDown(action: GameAction): boolean {
+    return this.actionKeys.get(action)?.some(k => k.isDown) ?? false
   }
+
+  isJustDown(action: GameAction): boolean {
+    return this.actionKeys.get(action)?.some(k => Phaser.Input.Keyboard.JustDown(k)) ?? false
+  }
+
+  // Convenience getters — backward compatible with existing prototypes
+  get up():    boolean { return this.isDown(GameAction.MoveUp)    }
+  get down():  boolean { return this.isDown(GameAction.MoveDown)  }
+  get left():  boolean { return this.isDown(GameAction.MoveLeft)  }
+  get right(): boolean { return this.isDown(GameAction.MoveRight) }
 }

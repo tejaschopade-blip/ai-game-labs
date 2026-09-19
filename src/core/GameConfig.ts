@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
-import { GAME_WIDTH, GAME_HEIGHT } from './Constants'
+import { DESIGN_WIDTH, DESIGN_HEIGHT } from './Constants'
+import { DesignTokens } from './DesignTokens'
 import { BootScene } from '../scenes/BootScene'
 import { PreloadScene } from '../scenes/PreloadScene'
 import { PrototypeScene } from '../scenes/PrototypeScene'
@@ -8,13 +9,13 @@ import { RotationWorldScene } from '../../prototypes/002-rotation-world/Rotation
 
 export const GameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
-  width: GAME_WIDTH,
-  height: GAME_HEIGHT,
-  backgroundColor: '#111111',
+  backgroundColor: DesignTokens.color.bg,
   scene: [BootScene, PreloadScene, PrototypeScene, FoundationTestScene, RotationWorldScene],
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
+    width: DESIGN_WIDTH,
+    height: DESIGN_HEIGHT,
   },
   physics: {
     default: 'arcade',

@@ -1,14 +1,45 @@
-# AI Development Rules
-
-1. Prefer the smallest working implementation.
-2. Do not over-engineer.
-3. Do not modify core systems unless necessary.
-4. Keep prototype-specific logic inside the prototype/game layer.
-5. Reuse existing systems before creating new ones.
-6. Do not create abstractions without a clear use case.
-7. Explain architectural changes before making significant changes.
-8. Preserve existing working behavior.
-9. Avoid unnecessary dependencies.
-10. Prioritize gameplay iteration speed over architectural perfection.
+# AI Development Rules — Foundation V2
 
 **AI should optimize for fast experimentation, not maximum abstraction.**
+
+## Rules
+
+1. **Reuse foundation before creating new systems.** Check `src/systems/`, `src/ui/`, `src/utils/` first.
+2. **Do not modify foundation for prototype-specific gameplay.** Keep it in `prototypes/NNN-name/`.
+3. **Keep prototype code isolated.** `prototypes/` imports `src/`. `src/` never imports `prototypes/`.
+4. **Dependencies flow prototype → foundation only.** Never the reverse.
+5. **Do not create abstractions without repeated concrete need.** Two prototypes must actually share it before extracting.
+6. **Prefer Phaser-native systems.** Use Phaser tweens, cameras, physics, input — not custom engines.
+7. **Keep implementations small and readable.** A new developer should understand it in one read.
+8. **Do not sacrifice gameplay iteration speed for architecture.**
+9. **If a system is genuinely reused by 2+ prototypes, propose extracting it** after the experiment proves the need — not before.
+10. **Prefer the smallest working implementation.** No over-engineering.
+11. **Explain architectural changes before making significant ones.** Do not silently redesign.
+12. **Avoid unnecessary npm packages.** Only add a dependency if it solves a real, recurring problem.
+
+## What belongs in the foundation
+
+- Systems used by 2+ prototypes
+- Utilities with no prototype-specific logic
+- Configuration and constants
+- Generic UI primitives
+
+## What belongs in the prototype
+
+- All gameplay mechanics
+- Prototype-specific entities, rules, state
+- Prototype-specific assets and asset keys
+- Any system that only one prototype uses (even if it looks reusable)
+
+## Adding a new prototype: 3 steps
+
+1. Create `prototypes/NNN-name/YourScene.ts`
+2. Register it in `src/core/GameConfig.ts` scene array
+3. Set `ACTIVE_SCENE` and `PROTOTYPE_NAME` in `src/core/Constants.ts`
+
+## Explicitly out of scope for Foundation V2
+
+ECS, dependency injection, custom physics, custom animation engine, custom UI framework,
+multiplayer, networking, backend, save/cloud, analytics, localization, monetization,
+procedural content framework, asset database, editor tooling, plugin architecture,
+complex scene manager.
