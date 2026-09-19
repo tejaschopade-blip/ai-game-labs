@@ -20,6 +20,16 @@ const C = {
   mintDark:    0x4a7a5e,
   ink:         '#6b7a5e',
   faint:       0xc3cbb4,
+  stone:       0x9aa08f,
+  stoneDark:   0x777d6e,
+  amber:       0xf0a93c,
+  amberLight:  0xfff3b0,
+  vine:        0x4f9b6a,
+  vineDark:    0x3a7550,
+  gem:         0xe0a33c,
+  gemLight:    0xf7d98a,
+  bloomPink:   0xf2c6e0,
+  bloomCream:  0xfff2b0,
 }
 
 const TILES_PER_SEC = 3.6
@@ -47,16 +57,31 @@ export class CozyMazeScene extends Phaser.Scene {
   private startTime = 0
   private elapsed = 0
 
+  private switchOn = false
+  private rgateLocked = true
+  private hasTreasure = false
+  private hiddenFound = false
+  private tookShortRoute = false
+
   private keyPos: GridPos | null = null
   private gatePos: GridPos | null = null
   private exitPos: GridPos | null = null
+  private switchPos: GridPos | null = null
+  private rgatePos: GridPos | null = null
+  private treasurePos: GridPos | null = null
+  private hiddenPos: GridPos | null = null
 
   private playerC!: Phaser.GameObjects.Container
   private eyeL!: Phaser.GameObjects.Arc
   private eyeR!: Phaser.GameObjects.Arc
   private keyC: Phaser.GameObjects.Container | null = null
   private gateC: Phaser.GameObjects.Container | null = null
+  private switchG: Phaser.GameObjects.Graphics | null = null
+  private rgateC: Phaser.GameObjects.Container | null = null
+  private treasureC: Phaser.GameObjects.Container | null = null
+  private hiddenC: Phaser.GameObjects.Container | null = null
   private hudKeyG!: Phaser.GameObjects.Graphics
+  private hudGemG!: Phaser.GameObjects.Graphics
 
   private swipeStart: { x: number; y: number } | null = null
 
@@ -77,11 +102,20 @@ export class CozyMazeScene extends Phaser.Scene {
     this.completed = false
     this.elapsed = 0
     this.startTime = this.time.now
+    this.switchOn = false
+    this.rgateLocked = true
+    this.hasTreasure = false
+    this.hiddenFound = false
+    this.tookShortRoute = false
 
     for (const o of this.level.objects) {
-      if (o.kind === 'key')  this.keyPos  = o.pos
-      if (o.kind === 'gate') this.gatePos = o.pos
-      if (o.kind === 'exit') this.exitPos = o.pos
+      if (o.kind === 'key')        this.keyPos      = o.pos
+      if (o.kind === 'gate')       this.gatePos     = o.pos
+      if (o.kind === 'exit')       this.exitPos     = o.pos
+      if (o.kind === 'switch')     this.switchPos   = o.pos
+      if (o.kind === 'remoteGate') this.rgatePos    = o.pos
+      if (o.kind === 'treasure')   this.treasurePos = o.pos
+      if (o.kind === 'hidden')     this.hiddenPos   = o.pos
     }
 
     this.tile = Math.floor(Math.min((W - 48) / this.level.width, (H - 108) / this.level.height))
@@ -94,6 +128,10 @@ export class CozyMazeScene extends Phaser.Scene {
     this.add.rectangle(W / 2, H / 2, W, H, C.bg).setDepth(0)
     this.buildMaze()
     this.buildExit()
+    this.buildSwitch()
+    this.buildRemoteGate()
+    this.buildTreasure()
+    this.buildHidden()
     this.buildGate()
     this.buildKey()
     this.buildPlayer()
@@ -101,10 +139,12 @@ export class CozyMazeScene extends Phaser.Scene {
     this.bindSwipe()
 
     this.overlay = new DebugOverlay(this, '010-cozy-maze')
-    this.overlay.addWatch('Tile', () => `(${this.col}, ${this.row})`)
-    this.overlay.addWatch('Dir',  () => this.dir ?? '-')
-    this.overlay.addWatch('Key',  () => (this.hasKey ? 'yes' : 'no'))
-    this.overlay.addWatch('Time', () => `${this.elapsed.toFixed(1)}s`)
+    this.overlay.addWatch('Tile',     () => `(${this.col}, ${this.row})`)
+    this.overlay.addWatch('Dir',      () => this.dir ?? '-')
+    this.overlay.addWatch('Key',      () => (this.hasKey ? 'yes' : 'no'))
+    this.overlay.addWatch('Switch',   () => (this.switchOn ? 'on' : 'off'))
+    this.overlay.addWatch('Treasure', () => (this.hasTreasure ? 'yes' : 'no'))
+    this.overlay.addWatch('Time',     () => `${this.elapsed.toFixed(1)}s`)
 
     this.renderPlayer()
     this.vfx.fadeTransition(300)
@@ -124,7 +164,8 @@ export class CozyMazeScene extends Phaser.Scene {
     if (row < 0 || row >= this.level.height) return false
     const k = posKey({ col, row })
     if (this.level.walls.has(k)) return false
-    if (this.gateLocked && this.gatePos && k === posKey(this.gatePos)) return false
+    if (this.gateLocked  && this.gatePos  && k === posKey(this.gatePos))  return false
+    if (this.rgateLocked && this.rgatePos && k === posKey(this.rgatePos)) return false
     return true
   }
 
@@ -153,21 +194,32 @@ export class CozyMazeScene extends Phaser.Scene {
           continue
         }
 
-        g.fillStyle(C.hedge, 1)
-        g.fillRoundedRect(x + 1, y + 1, T - 2, T - 2, Math.max(3, T * 0.26))
-        g.fillStyle(C.hedgeTop, 1)
-        g.fillRoundedRect(x + 3, y + 3, T - 6, Math.max(3, T * 0.28), Math.max(2, T * 0.13))
-
-        // Deterministic speckles — derived from grid pos so they never flicker.
-        const seed = c * 7 + r * 13
-        g.fillStyle(C.hedgeLeaf, 1)
-        const span = Math.max(1, T - 10)
-        for (let i = 0; i < 3; i++) {
-          const sx = x + 5 + ((seed * (i + 3) * 17) % span)
-          const sy = y + 6 + ((seed * (i + 5) * 11) % Math.max(1, span - 2))
-          g.fillCircle(sx, sy, leafR)
-        }
+        this.drawHedge(g, x, y, c, r, leafR)
       }
+    }
+  }
+
+  // Shared so the hidden tile is pixel-identical to a real hedge.
+  private drawHedge(
+    g: Phaser.GameObjects.Graphics,
+    x: number, y: number,
+    c: number, r: number,
+    leafR: number,
+  ): void {
+    const T = this.tile
+    g.fillStyle(C.hedge, 1)
+    g.fillRoundedRect(x + 1, y + 1, T - 2, T - 2, Math.max(3, T * 0.26))
+    g.fillStyle(C.hedgeTop, 1)
+    g.fillRoundedRect(x + 3, y + 3, T - 6, Math.max(3, T * 0.28), Math.max(2, T * 0.13))
+
+    // Deterministic speckles — derived from grid pos so they never flicker.
+    const seed = c * 7 + r * 13
+    g.fillStyle(C.hedgeLeaf, 1)
+    const span = Math.max(1, T - 10)
+    for (let i = 0; i < 3; i++) {
+      const sx = x + 5 + ((seed * (i + 3) * 17) % span)
+      const sy = y + 6 + ((seed * (i + 5) * 11) % Math.max(1, span - 2))
+      g.fillCircle(sx, sy, leafR)
     }
   }
 
@@ -192,6 +244,98 @@ export class CozyMazeScene extends Phaser.Scene {
     g.fillRoundedRect(x - T * 0.20, y - T * 0.18, T * 0.40, T * 0.56, {
       tl: T * 0.20, tr: T * 0.20, bl: 2, br: 2,
     })
+  }
+
+  private buildSwitch(): void {
+    if (!this.switchPos) return
+    const { x, y } = this.tileCenter(this.switchPos.col, this.switchPos.row)
+
+    this.switchG = this.add.graphics().setDepth(4)
+    this.switchG.setPosition(x, y)
+    this.drawSwitch(false)
+  }
+
+  private drawSwitch(on: boolean): void {
+    const g = this.switchG
+    if (!g) return
+    const T = this.tile
+    g.clear()
+    // Sunken stone ring stays put; the plate inside is what moves.
+    g.fillStyle(C.stoneDark, 1)
+    g.fillCircle(0, 0, T * 0.34)
+    g.fillStyle(on ? C.amber : C.stone, 1)
+    g.fillCircle(0, on ? T * 0.04 : 0, T * 0.26)
+    g.fillStyle(on ? C.amberLight : 0xb6bcab, 1)
+    g.fillCircle(0, on ? T * 0.02 : -T * 0.03, T * 0.15)
+  }
+
+  private buildRemoteGate(): void {
+    if (!this.rgatePos) return
+    const T = this.tile
+    const { x, y } = this.tileCenter(this.rgatePos.col, this.rgatePos.row)
+
+    // Vines, not wood — visually distinct from the key gate so the player
+    // does not expect the key to open it.
+    const g = this.add.graphics()
+    for (let i = 0; i < 3; i++) {
+      const vx = -T * 0.30 + i * T * 0.30
+      g.fillStyle(C.vine, 1)
+      g.fillRoundedRect(vx - T * 0.055, -T * 0.42, T * 0.11, T * 0.84, T * 0.055)
+      g.fillStyle(C.vineDark, 1)
+      g.fillCircle(vx, -T * 0.22 + i * T * 0.06, T * 0.085)
+      g.fillCircle(vx, T * 0.16 - i * T * 0.05, T * 0.075)
+    }
+    this.rgateC = this.add.container(x, y, [g]).setDepth(5)
+  }
+
+  private buildTreasure(): void {
+    if (!this.treasurePos) return
+    const T = this.tile
+    const { x, y } = this.tileCenter(this.treasurePos.col, this.treasurePos.row)
+
+    const g = this.add.graphics()
+    g.fillStyle(C.gem, 1)
+    g.fillTriangle(0, -T * 0.24, -T * 0.21, -T * 0.02, T * 0.21, -T * 0.02)
+    g.fillTriangle(-T * 0.21, -T * 0.02, T * 0.21, -T * 0.02, 0, T * 0.26)
+    g.fillStyle(C.gemLight, 1)
+    g.fillTriangle(0, -T * 0.24, -T * 0.21, -T * 0.02, 0, -T * 0.02)
+
+    this.treasureC = this.add.container(x, y, [g]).setDepth(6)
+    this.tweens.add({
+      targets: this.treasureC,
+      y: y - T * 0.12,
+      duration: 900, yoyo: true, repeat: -1, ease: 'Sine.InOut',
+    })
+  }
+
+  private buildHidden(): void {
+    if (!this.hiddenPos) return
+    const T = this.tile
+    const col = this.hiddenPos.col
+    const row = this.hiddenPos.row
+    const x = this.originX + col * T
+    const y = this.originY + row * T
+
+    // parseLevel already removed this tile from walls, so the base layer drew
+    // path here. Overlay a real hedge plus a clue the player can notice.
+    const g = this.add.graphics()
+    this.drawHedge(g, 0, 0, col, row, Math.max(1, T * 0.055))
+
+    g.fillStyle(C.bloomPink, 1)
+    g.fillCircle(T * 0.30, T * 0.34, T * 0.065)
+    g.fillCircle(T * 0.62, T * 0.58, T * 0.055)
+    g.fillStyle(C.bloomCream, 1)
+    g.fillCircle(T * 0.46, T * 0.24, T * 0.05)
+    g.fillCircle(T * 0.70, T * 0.36, T * 0.042)
+
+    const sparkle = this.add.circle(T * 0.5, T * 0.5, T * 0.07, C.bloomCream, 0.55)
+    this.tweens.add({
+      targets: sparkle,
+      alpha: 0.12, scaleX: 1.5, scaleY: 1.5,
+      duration: 1300, yoyo: true, repeat: -1, ease: 'Sine.InOut',
+    })
+
+    this.hiddenC = this.add.container(x, y, [g, sparkle]).setDepth(3)
   }
 
   private buildGate(): void {
@@ -254,10 +398,18 @@ export class CozyMazeScene extends Phaser.Scene {
     }).setOrigin(0.5).setScrollFactor(0).setDepth(100)
 
     this.hudKeyG = this.add.graphics().setDepth(100).setScrollFactor(0)
-    this.hudKeyG.setPosition(W - 96, 25)
+    this.hudKeyG.setPosition(W - 186, 25)
     this.drawHudKey(false)
 
-    this.add.text(W - 60, 25, 'KEY', {
+    this.add.text(W - 150, 25, 'KEY', {
+      fontSize: '12px', color: C.ink,
+    }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(100)
+
+    this.hudGemG = this.add.graphics().setDepth(100).setScrollFactor(0)
+    this.hudGemG.setPosition(W - 92, 25)
+    this.drawHudGem(false)
+
+    this.add.text(W - 74, 25, 'GEM', {
       fontSize: '12px', color: C.ink,
     }).setOrigin(0, 0.5).setScrollFactor(0).setDepth(100)
 
@@ -278,6 +430,18 @@ export class CozyMazeScene extends Phaser.Scene {
     g.fillRect(5, -2.5, 16, 5)
     g.fillRect(15, 2, 3, 6)
     g.fillRect(20, 2, 3, 5)
+  }
+
+  private drawHudGem(held: boolean): void {
+    const g = this.hudGemG
+    g.clear()
+    g.fillStyle(held ? C.gem : C.faint, 1)
+    g.fillTriangle(0, -9, -8, -1, 8, -1)
+    g.fillTriangle(-8, -1, 8, -1, 0, 10)
+    if (held) {
+      g.fillStyle(C.gemLight, 1)
+      g.fillTriangle(0, -9, -8, -1, 0, -1)
+    }
   }
 
   // ── input ──────────────────────────────────────────────────────────────────
@@ -370,6 +534,11 @@ export class CozyMazeScene extends Phaser.Scene {
 
   private onEnterTile(col: number, row: number): void {
     const k = posKey({ col, row })
+    if (!this.hiddenFound && this.hiddenPos && k === posKey(this.hiddenPos)) this.revealHidden()
+    if (!this.switchOn && this.switchPos && k === posKey(this.switchPos)) this.activateSwitch()
+    if (!this.hasTreasure && this.treasurePos && k === posKey(this.treasurePos)) this.collectTreasure()
+    // Actual traversal, not switch use — a player can flip the switch and still go north.
+    if (this.rgatePos && k === posKey(this.rgatePos)) this.tookShortRoute = true
     if (!this.hasKey && this.keyPos && k === posKey(this.keyPos)) this.collectKey()
     if (this.exitPos && k === posKey(this.exitPos) && this.level.mission.requireExit) {
       this.completeLevel()
@@ -411,6 +580,115 @@ export class CozyMazeScene extends Phaser.Scene {
     this.openGate()
   }
 
+  private revealHidden(): void {
+    if (!this.hiddenPos || !this.hiddenC) return
+    this.hiddenFound = true
+    const { x, y } = this.tileCenter(this.hiddenPos.col, this.hiddenPos.row)
+
+    this.vfx.burst(x, y, C.bloomPink, 10)
+    this.vfx.floatingText(x, y, 'A hidden path!', '#c98fb0', '16px')
+
+    const hedge = this.hiddenC
+    this.hiddenC = null
+    this.tweens.add({
+      targets: hedge,
+      alpha: 0,
+      duration: 300, ease: 'Quad.Out',
+      onComplete: () => hedge.destroy(),
+    })
+  }
+
+  private collectTreasure(): void {
+    if (!this.treasurePos) return
+    this.hasTreasure = true
+    const { x, y } = this.tileCenter(this.treasurePos.col, this.treasurePos.row)
+
+    this.vfx.burst(x, y, C.gem, 14)
+    this.vfx.floatingText(x, y, 'Treasure!', '#e0a33c', '18px')
+    this.vfx.screenShake(3, 180)
+    this.treasureC?.destroy()
+    this.treasureC = null
+    this.drawHudGem(true)
+  }
+
+  // switch -> burst -> travelling pulse -> remote gate opens -> falling leaves.
+  // The whole maze is on screen, so the player sees the distant effect happen.
+  private activateSwitch(): void {
+    if (!this.switchPos) return
+    this.switchOn = true
+    const from = this.tileCenter(this.switchPos.col, this.switchPos.row)
+
+    this.drawSwitch(true)
+    if (this.switchG) this.vfx.scalePunch(this.switchG, 1.35, 220)
+    this.vfx.burst(from.x, from.y, C.amber, 10)
+
+    if (!this.rgatePos) return
+    const to = this.tileCenter(this.rgatePos.col, this.rgatePos.row)
+    this.travellingPulse(from, to, () => this.openRemoteGate())
+  }
+
+  private travellingPulse(
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    onArrive: () => void,
+  ): void {
+    const T = this.tile
+    const halo = this.add.circle(from.x, from.y, T * 0.30, C.amber, 0.45).setDepth(59)
+    const dot  = this.add.circle(from.x, from.y, T * 0.15, C.amberLight, 1).setDepth(60)
+
+    this.tweens.add({
+      targets: [halo, dot],
+      x: to.x, y: to.y,
+      duration: 520, ease: 'Sine.InOut',
+      onComplete: () => { halo.destroy(); dot.destroy(); onArrive() },
+    })
+    this.tweens.add({
+      targets: halo,
+      scaleX: 1.7, scaleY: 1.7, alpha: 0,
+      duration: 520, ease: 'Quad.Out',
+    })
+  }
+
+  private openRemoteGate(): void {
+    if (!this.rgatePos || !this.rgateC) return
+    // Unblock as the animation starts so the opening never eats an input.
+    this.rgateLocked = false
+
+    const { x, y } = this.tileCenter(this.rgatePos.col, this.rgatePos.row)
+    this.vfx.burst(x, y, C.vine, 10)
+    this.fallingLeaves(x, y)
+
+    const gate = this.rgateC
+    this.rgateC = null
+    this.tweens.add({
+      targets: gate,
+      scaleY: 0.05, alpha: 0,
+      duration: 400, ease: 'Back.In',
+      onComplete: () => gate.destroy(),
+    })
+  }
+
+  private fallingLeaves(x: number, y: number, count = 5): void {
+    const T = this.tile
+    const tints = [0x8fc46a, 0xc9d97a, 0xe8c46a, 0x74b562, 0x9fd17e]
+    for (let i = 0; i < count; i++) {
+      const lx = x + (i - (count - 1) / 2) * T * 0.26
+      const leaf = this.add
+        .ellipse(lx, y - T * 0.35, T * 0.17, T * 0.10, tints[i % tints.length])
+        .setDepth(58)
+      leaf.setAngle(i * 37)
+      this.tweens.add({
+        targets: leaf,
+        x: lx + (i % 2 === 0 ? 1 : -1) * T * 0.38,
+        y: y + T * 1.05,
+        angle: leaf.angle + 220,
+        alpha: 0,
+        duration: 880 + i * 90, ease: 'Sine.In',
+        onComplete: () => leaf.destroy(),
+      })
+    }
+  }
+
   private openGate(): void {
     if (!this.gatePos || !this.gateC) return
     // Unblock immediately so the opening animation never eats an input.
@@ -443,18 +721,28 @@ export class CozyMazeScene extends Phaser.Scene {
     this.vfx.burst(pos.x, pos.y, C.mint, 16)
     this.vfx.screenShake(4, 250)
 
-    this.add.rectangle(W / 2, H / 2, 330, 190, 0xfffdf5, 0.97)
+    this.add.rectangle(W / 2, H / 2, 330, 234, 0xfffdf5, 0.97)
       .setStrokeStyle(2, C.mint).setDepth(500).setScrollFactor(0)
 
-    this.add.text(W / 2, H / 2 - 52, 'GARDEN REACHED', {
+    this.add.text(W / 2, H / 2 - 74, 'GARDEN REACHED', {
       fontSize: '24px', color: '#4a7a5e', fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(501).setScrollFactor(0)
 
-    this.add.text(W / 2, H / 2 - 14, `${this.elapsed.toFixed(1)} seconds`, {
+    this.add.text(W / 2, H / 2 - 38, `${this.elapsed.toFixed(1)} seconds`, {
       fontSize: '16px', color: C.ink,
     }).setOrigin(0.5).setDepth(501).setScrollFactor(0)
 
-    const btn = this.add.text(W / 2, H / 2 + 42, 'Play Again', {
+    this.add.text(W / 2, H / 2 - 10,
+      `Route: ${this.tookShortRoute ? 'short' : 'safe'}`, {
+        fontSize: '14px', color: this.tookShortRoute ? '#c07a2a' : '#5a8a6a',
+      }).setOrigin(0.5).setDepth(501).setScrollFactor(0)
+
+    this.add.text(W / 2, H / 2 + 12,
+      `Treasure: ${this.hasTreasure ? 'found' : 'missed'}`, {
+        fontSize: '14px', color: this.hasTreasure ? '#c07a2a' : '#9aa88c',
+      }).setOrigin(0.5).setDepth(501).setScrollFactor(0)
+
+    const btn = this.add.text(W / 2, H / 2 + 60, 'Play Again', {
       fontSize: '16px', color: '#ffffff', backgroundColor: '#5a9d4a',
       padding: { x: 22, y: 10 },
     }).setOrigin(0.5).setDepth(501).setScrollFactor(0).setInteractive({ useHandCursor: true })

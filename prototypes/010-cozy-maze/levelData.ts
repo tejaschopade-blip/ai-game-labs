@@ -18,13 +18,22 @@ const OPPOSITE: Record<Dir, Dir> = {
 
 export function opposite(d: Dir): Dir { return OPPOSITE[d] }
 
-export type ObjectKind = 'key' | 'gate' | 'exit'
+export type ObjectKind =
+  | 'key' | 'gate' | 'exit'
+  | 'switch' | 'remoteGate' | 'treasure' | 'hidden'
+
+// One-step relation only. Chains and conditions are deliberately out of scope.
+export interface Relation {
+  target: string
+  effect: 'open' | 'close'
+}
 
 export interface LevelObject {
   id: string
   kind: ObjectKind
   pos: GridPos
   opensWith?: string
+  affects?: Relation[]
 }
 
 export interface LevelDef {
@@ -64,6 +73,12 @@ export function parseLevel(def: LevelDef): ParsedLevel {
     }
   })
 
+  // A hidden tile is drawn as hedge but is walkable, so the objects list
+  // overrides the topology rather than the ASCII carrying a second symbol.
+  for (const o of def.objects) {
+    if (o.kind === 'hidden') walls.delete(posKey(o.pos))
+  }
+
   return {
     id: def.id,
     name: def.name,
@@ -101,27 +116,37 @@ export function reachableFrom(
   return seen
 }
 
+// Route structure (verified by BFS, see README):
+//   SAFE   north zigzag, 34 tiles to the key, needs nothing
+//   SHORT  south corridor, 26 tiles, but rgate1 blocks it until switch1 fires
+//   SECRET hidden1 off the north route opens a treasure alcove
+// gate1 stays the sole chokepoint before the exit.
 export const GARDEN_SHORTCUT: LevelDef = {
   id: 'garden-shortcut',
   name: 'The Garden Shortcut',
   theme: 'cozy_garden',
   ascii: [
-    '###################',
-    '#@....#.....#.....#',
-    '#.###.#.###.#.###.#',
-    '#.#...#.#.#.#.#...#',
-    '#.#.###.#.#.#.#.###',
-    '#...#...#...#.#...#',
-    '###.#.###.###.###.#',
-    '#...#.#...#.....#.#',
-    '#.###.#.#.#####.#.#',
-    '#.......#.......#.#',
-    '###################',
+    '#######################',
+    '#.....###.....###...###',
+    '#.###.###.###.###.#.###',
+    '#.###.....#.#.....#.###',
+    '#.#################.###',
+    '#@###############...###',
+    '#.###############.#.###',
+    '#.###.###########.#.###',
+    '#.###.###########.#...#',
+    '#.................#####',
+    '#######################',
   ].join('\n'),
   objects: [
-    { id: 'key1',  kind: 'key',  pos: { col:  9, row: 5 } },
-    { id: 'gate1', kind: 'gate', pos: { col: 17, row: 7 }, opensWith: 'key1' },
-    { id: 'exit1', kind: 'exit', pos: { col: 17, row: 9 } },
+    { id: 'hidden1',   kind: 'hidden',     pos: { col: 11, row: 2 } },
+    { id: 'treasure1', kind: 'treasure',   pos: { col: 11, row: 3 } },
+    { id: 'switch1',   kind: 'switch',     pos: { col:  5, row: 7 },
+      affects: [{ target: 'rgate1', effect: 'open' }] },
+    { id: 'rgate1',    kind: 'remoteGate', pos: { col:  9, row: 9 } },
+    { id: 'key1',      kind: 'key',        pos: { col: 19, row: 5 } },
+    { id: 'gate1',     kind: 'gate',       pos: { col: 19, row: 7 }, opensWith: 'key1' },
+    { id: 'exit1',     kind: 'exit',       pos: { col: 21, row: 8 } },
   ],
   mission: { requireExit: true },
 }
