@@ -6,13 +6,22 @@
        values on notched devices; Layout.ts reads those. -->
   <meta name="viewport"
         content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <meta name="theme-color" content="#111111" />
+  <meta name="theme-color" content="#0d1020" />
   <meta name="mobile-web-app-capable" content="yes" />
   <title>AI Game Lab</title>
+  <!-- Phaser's default font is Courier, which is most of why untouched
+       prototypes read as debug scenes. Nunito is the presentation layer's
+       default family; main.ts waits for it before booting so Phaser measures
+       text correctly. If the network is unavailable the stack falls back to
+       Trebuchet MS and nothing breaks. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;800&display=swap" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
-      background: #111;
+      background: #0d1020;
       height: 100vh;
       height: 100dvh;
       overflow: hidden;

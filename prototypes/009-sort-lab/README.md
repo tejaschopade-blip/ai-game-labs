@@ -30,6 +30,27 @@ Each mode has 2 rounds:
 - Round 2: more objects (9), subtler distinctions
 After Round 2, Try Again resets to the same round.
 
+## Presentation
+
+This prototype is the **benchmark for the presentation layer** (`docs/presentation.md`).
+It is built entirely on `createPresentation(this, { theme: 'puzzle', ... })`:
+themed surfaces via `Draw`, baked static art via `bakeGraphics`, feedback via
+`p.juice`, HUD via `p.ui.createBadge` / `createProgressBar`.
+
+**No gameplay rule changed in that upgrade.** Object generation, categories,
+counts per round, hit radii, container positions, weight-bounce heights and
+durations, behaviour speeds and clamps, and the mistake count are all identical
+to the previous version. Only rendering, animation, layout hierarchy and
+feedback changed.
+
+One deliberate restraint: bin accents cycle through a fixed neutral ramp rather
+than matching their own category colour. Tinting the RED bin red would make
+COLOR mode measurably easier than the other four, and this prototype exists to
+compare those five modes against each other.
+
+It stays landscape 960x540 — existing prototypes are never retrofitted to
+portrait (`docs/ai-rules.md` rule 13).
+
 ## Experiment Notes
 
 **Color:**

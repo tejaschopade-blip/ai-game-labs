@@ -1,6 +1,7 @@
 import Phaser from 'phaser'
 import { DESIGN_WIDTH, DESIGN_HEIGHT } from './Constants'
-import { DesignTokens } from './DesignTokens'
+import { Themes } from '../presentation/Theme'
+import { hex } from '../presentation/Theme'
 import { BootScene } from '../scenes/BootScene'
 import { PreloadScene } from '../scenes/PreloadScene'
 import { PrototypeScene } from '../scenes/PrototypeScene'
@@ -19,7 +20,9 @@ import { GameSelectScene } from '../scenes/GameSelectScene'
 
 export const GameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
-  backgroundColor: DesignTokens.color.bg,
+  // Matches the default `puzzle` theme so the letterbox around a FIT-scaled
+  // canvas blends with the game rather than framing it in a different black.
+  backgroundColor: hex(Themes.puzzle.colors.background),
   scene: [BootScene, PreloadScene, GameSelectScene, PrototypeScene, FoundationTestScene, RotationWorldScene, LaserMirrorScene, TimeEchoScene, ChainReactionScene, StealPropertiesScene, SokobanScene, BlockPlacementScene, SortLabScene, CozyMazeScene, LoopSortScene],
   scale: {
     mode: Phaser.Scale.FIT,

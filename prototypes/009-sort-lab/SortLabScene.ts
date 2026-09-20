@@ -1,16 +1,20 @@
 import Phaser from 'phaser'
 import { DebugOverlay } from '../../src/ui/DebugOverlay'
-import { DesignTokens as T } from '../../src/core/DesignTokens'
-import { Layout } from '../../src/systems/Layout'
-import { GameJuice } from '../../src/systems/GameJuice'
-import { addShadow } from '../../src/systems/Shadow'
-import { createBackground, BackgroundHandle } from '../../src/systems/Background'
 import { fadeIn } from '../../src/systems/Transitions'
-import { UIFactory, ButtonHandle, PanelHandle } from '../../src/ui/UIFactory'
+import { ButtonHandle, PanelHandle, ProgressBarHandle, BadgeHandle } from '../../src/ui/UIFactory'
+import {
+  createPresentation, Presentation, Theme,
+  drawRoundedCard, drawShadow, drawShadowCircle, drawSoftCircle,
+  drawGameTile, drawSelectionRing, drawHighlight, bakeGraphics, hex, shade, mix,
+} from '../../src/presentation'
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 // Landscape 960x540. This prototype deliberately stays landscape — see
 // docs/ai-rules.md: existing prototypes are not retrofitted to portrait.
+//
+// Every value below is unchanged from V3. Object positions, container positions
+// and hit radii are gameplay-relevant and were not touched by the presentation
+// upgrade — only what is drawn at those coordinates changed.
 const W            = 960
 const H            = 540
 const MODE_BAR_H   = 64
@@ -22,21 +26,16 @@ const HINT_Y       = 380
 const CONT_CY      = 444
 const CONT_W       = 150
 const CONT_H       = 80
-const HUD_Y        = H - 26
+const HUD_Y        = H - 24
 const SHADOW_DY    = 5
 
-// Palette — tertiary background recedes, containers read as surfaces
-const BG_TOP       = 0x0b0b16
-const BG_BOTTOM    = 0x15152a
-const BAR_FILL     = 0x13132a
-const BAR_BORDER   = 0x26264a
-
-const CONT_FILL             = 0x1b1b34
-const CONT_FILL_ELIGIBLE    = 0x22224a
-const CONT_FILL_HOVER       = 0x2b2b60
-const CONT_STROKE           = 0x2e2e55
-const CONT_STROKE_ELIGIBLE  = 0x4a6fd0
-const CONT_STROKE_HOVER     = 0x7fa8ff
+// Presentation-only: the three surfaces that give the screen a hierarchy —
+// chrome (mode bar) / board (where you pick) / tray (where you drop).
+const BOARD_CX     = OBJ_AREA_X + OBJ_AREA_W / 2
+const BOARD_CY     = OBJ_AREA_Y + OBJ_AREA_H / 2 - 4
+const BOARD_W      = OBJ_AREA_W + 42
+const BOARD_H      = OBJ_AREA_H + 8
+const TRAY_H       = CONT_H + 28
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type SortColor    = 'red' | 'blue' | 'green' | 'yellow'
@@ -71,9 +70,15 @@ interface Container {
 
 interface ContainerVisual {
   data: Container
-  shadow: Phaser.GameObjects.Graphics
-  box: Phaser.GameObjects.Graphics
+  shadow: Phaser.GameObjects.Image
+  /** Holds the three baked state images; tweens and punches target this. */
+  box: Phaser.GameObjects.Container
+  /** [idle, eligible, hovered] — only one is visible at a time. */
+  states: Phaser.GameObjects.Image[]
   label: Phaser.GameObjects.Text
+  /** Per-slot accent. Deliberately NOT derived from the category's own colour —
+   *  see buildContainerVisuals. */
+  accent: number
   eligible: boolean
   hovered: boolean
 }
@@ -176,91 +181,111 @@ function generateObjects(mode: SortMode, round: number): SortObject[] {
 }
 
 // ── Draw helper: render one object shape ──────────────────────────────────────
-// Per-mode discriminators are unchanged from V2. WEIGHT objects stay uniformly
-// grey and BEHAVIOR objects uniformly pale — giving either a visual tell would
-// destroy the inference mechanic those modes exist to test.
+// The per-mode *discriminators* are unchanged: WEIGHT objects stay uniformly
+// grey and BEHAVIOR objects uniformly pale, because giving either a visual tell
+// would destroy the inference mechanic those modes exist to test. Radii are
+// unchanged too. What changed is only how each shape is rendered — soft circles
+// and moulded tiles via presentation/Draw instead of flat fills with one
+// hand-placed highlight dot.
 function drawObjShape(
   gfx: Phaser.GameObjects.Graphics,
   mode: SortMode,
   obj: SortObject,
+  theme: Theme,
+  cx = 0,
+  cy = 0,
 ): void {
-  gfx.clear()
-
-  let color: number
-  let r: number
-
   switch (mode) {
     case 'COLOR':
-      color = COLOR_HEX[obj.color]
-      r     = SIZE_R[obj.size]
-      gfx.fillStyle(color, 1)
-      gfx.fillCircle(0, 0, r)
-      gfx.fillStyle(0xffffff, 0.15)
-      gfx.fillCircle(-r * 0.25, -r * 0.3, r * 0.35)
+    case 'SIZE': {
+      const color = COLOR_HEX[obj.color]
+      const r     = SIZE_R[obj.size]
+      drawSoftCircle(gfx, cx, cy, r, {
+        fill: color,
+        stroke: shade(color, -0.18),
+        strokeWidth: theme.stroke.thin,
+      }, theme)
       break
-
-    case 'SIZE':
-      color = COLOR_HEX[obj.color]
-      r     = SIZE_R[obj.size]
-      gfx.fillStyle(color, 1)
-      gfx.fillCircle(0, 0, r)
-      gfx.fillStyle(0xffffff, 0.15)
-      gfx.fillCircle(-r * 0.25, -r * 0.3, r * 0.35)
-      break
+    }
 
     case 'SHAPE': {
-      color = COLOR_HEX[obj.color]
-      r     = 26  // fixed size so shape is the discriminator
-      gfx.fillStyle(color, 1)
+      const color = COLOR_HEX[obj.color]
+      const r     = 26  // fixed size so shape is the discriminator
       if (obj.shape === 'circle') {
-        gfx.fillCircle(0, 0, r)
+        drawSoftCircle(gfx, cx, cy, r, {
+          fill: color, stroke: shade(color, -0.18), strokeWidth: theme.stroke.thin,
+        }, theme)
       } else if (obj.shape === 'square') {
-        gfx.fillRect(-r, -r, r * 2, r * 2)
+        drawGameTile(gfx, cx, cy, r * 2, {
+          fill: color, radius: theme.radius.sm,
+          stroke: shade(color, -0.18), strokeWidth: theme.stroke.thin,
+        }, theme)
       } else {
-        // triangle pointing up
+        // Triangle pointing up. Same vertices as V3 — Draw has no triangle
+        // primitive, so the sheen is composited by hand: a lighter inner
+        // triangle occupying the top two-thirds.
+        gfx.fillStyle(color, 1)
         gfx.beginPath()
-        gfx.moveTo(0, -r)
-        gfx.lineTo(r * 0.866, r * 0.5)
-        gfx.lineTo(-r * 0.866, r * 0.5)
+        gfx.moveTo(cx, cy - r)
+        gfx.lineTo(cx + r * 0.866, cy + r * 0.5)
+        gfx.lineTo(cx - r * 0.866, cy + r * 0.5)
         gfx.closePath()
         gfx.fillPath()
+
+        gfx.fillStyle(theme.colors.highlight, theme.surfaceDepth.highlight * 1.6)
+        gfx.beginPath()
+        gfx.moveTo(cx, cy - r * 0.88)
+        gfx.lineTo(cx + r * 0.52, cy + r * 0.02)
+        gfx.lineTo(cx - r * 0.52, cy + r * 0.02)
+        gfx.closePath()
+        gfx.fillPath()
+
+        gfx.lineStyle(theme.stroke.thin, shade(color, -0.18), 1)
+        gfx.beginPath()
+        gfx.moveTo(cx, cy - r)
+        gfx.lineTo(cx + r * 0.866, cy + r * 0.5)
+        gfx.lineTo(cx - r * 0.866, cy + r * 0.5)
+        gfx.closePath()
+        gfx.strokePath()
       }
       break
     }
 
-    case 'WEIGHT':
-      // All look identical — grey square — weight inferred by bounce
-      r = 24
-      gfx.fillStyle(0x778899, 1)
-      gfx.fillRect(-r, -r, r * 2, r * 2)
-      gfx.fillStyle(0xffffff, 0.08)
-      gfx.fillRect(-r, -r, r * 2, 6)
+    case 'WEIGHT': {
+      // All look identical — grey tile — weight inferred by bounce
+      const r = 24
+      drawGameTile(gfx, cx, cy, r * 2, {
+        fill: 0x778899, radius: theme.radius.sm,
+        stroke: 0x5d6b7a, strokeWidth: theme.stroke.thin,
+      }, theme)
       break
+    }
 
-    case 'BEHAVIOR':
-      // All look identical — white/light circles
-      r = 26
-      gfx.fillStyle(0xaabbcc, 1)
-      gfx.fillCircle(0, 0, r)
-      gfx.fillStyle(0xffffff, 0.2)
-      gfx.fillCircle(-6, -8, 10)
+    case 'BEHAVIOR': {
+      // All look identical — pale circles
+      const r = 26
+      drawSoftCircle(gfx, cx, cy, r, {
+        fill: 0xaabbcc, stroke: 0x8497aa, strokeWidth: theme.stroke.thin,
+      }, theme)
       break
+    }
   }
 }
 
 // ── Scene ─────────────────────────────────────────────────────────────────────
 export class SortLabScene extends Phaser.Scene {
   private overlay!: DebugOverlay
-  private juice!: GameJuice
-  private ui!: UIFactory
-  private layout!: Layout
-  private background?: BackgroundHandle
+  private p!: Presentation
+  private theme!: Theme
 
   private mode: SortMode     = 'COLOR'
   private round              = 0
   private objects: SortObject[] = []
-  private objGfx             = new Map<number, Phaser.GameObjects.Graphics>()
-  private objShadow          = new Map<number, Phaser.GameObjects.Graphics>()
+  // Baked Images rather than live Graphics: see bakeGraphics. Each piece costs
+  // ~9 path fills to draw, and nine of them re-tessellating every frame was the
+  // single largest cost in the upgraded scene.
+  private objGfx             = new Map<number, Phaser.GameObjects.Image>()
+  private objShadow          = new Map<number, Phaser.GameObjects.Image>()
   private containers: Container[] = []
   private containerVisuals: ContainerVisual[] = []
   private containerFill      = new Map<string, number>()
@@ -270,6 +295,8 @@ export class SortLabScene extends Phaser.Scene {
   private panelButtons: ButtonHandle[] = []
   private hintText?: Phaser.GameObjects.Text
   private hudText?: Phaser.GameObjects.Text
+  private progress?: ProgressBarHandle
+  private mistakeBadge?: BadgeHandle
 
   private selectedId  = -1
   private mistakes    = 0
@@ -280,26 +307,28 @@ export class SortLabScene extends Phaser.Scene {
   private bounceTweens = new Set<Phaser.Tweens.Tween>()
   private ptrX        = 0
   private ptrY        = 0
+  // Last values pushed to the HUD. update() runs every frame, and both the
+  // progress bar (which starts a tween) and the badge (which repaints its pill)
+  // are expensive to drive unconditionally.
+  private hudSettled  = -1
+  private hudMistakes = -1
 
   constructor() { super({ key: 'SortLabScene' }) }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────────
 
   create(): void {
-    this.layout = new Layout(this)
-    this.ui     = new UIFactory(this)
-    // No AudioManager: the repo ships no audio assets, so every juice call
-    // silently plays nothing rather than referencing a key that doesn't exist.
-    this.juice  = new GameJuice(this)
-
-    this.background = createBackground(this, {
-      color: BG_TOP,
-      gradientTo: BG_BOTTOM,
-      pattern: 'dots',
-      patternAlpha: 0.025,
-      patternSpacing: 72,
-      particles: 0,          // must not compete with the sortable objects
+    // One call replaces the V3 quartet of Layout + UIFactory + GameJuice +
+    // createBackground, and scales the theme's geometry into this scene's
+    // 960x540 landscape space. No AudioManager: the repo ships no audio assets,
+    // so every juice sound is a silent no-op rather than a missing-key error.
+    this.p = createPresentation(this, {
+      theme: 'puzzle',
+      background: { preset: 'softGradient', vignette: 0.26, patternSpacing: 64 },
     })
+    this.theme = this.p.theme
+
+    this.buildSurfaces()
 
     this.overlay = new DebugOverlay(this, '009-sort-lab')
     this.overlay.addWatch('Mode',     () => this.mode)
@@ -313,11 +342,6 @@ export class SortLabScene extends Phaser.Scene {
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       this.ptrX = p.x
       this.ptrY = p.y
-    })
-
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      this.background?.destroy()
-      this.background = undefined
     })
 
     this.buildModeBar()
@@ -334,38 +358,85 @@ export class SortLabScene extends Phaser.Scene {
     this.updateHud()
   }
 
+  // ── Static surfaces ─────────────────────────────────────────────────────────
+
+  /**
+   * Three stacked surfaces: chrome, board, tray. This is the single biggest
+   * readability change in the upgrade — previously every element floated on one
+   * flat background, so nothing said "pick here, drop there".
+   */
+  private buildSurfaces(): void {
+    const t = this.theme
+    const pad = 28
+
+    bakeGraphics(this, BOARD_W + pad * 2, BOARD_H + pad * 2, (g, w, h) => {
+      drawShadow(g, w / 2, h / 2, BOARD_W, BOARD_H,
+        { radius: t.radius.lg, ...t.shadows.floating }, t)
+      drawRoundedCard(g, w / 2, h / 2, BOARD_W, BOARD_H, {
+        fill: mix(t.colors.background, t.colors.surface, 0.9),
+        radius: t.radius.lg,
+        stroke: t.colors.border,
+        strokeWidth: t.stroke.thin,
+        strokeAlpha: 0.85,
+        highlight: 0.05,
+        bevel: 0.12,
+        inset: true,
+      }, t)
+    }).setPosition(BOARD_CX, BOARD_CY).setDepth(1)
+
+    const trayW = W - 32
+    bakeGraphics(this, trayW + pad * 2, TRAY_H + pad * 2, (g, w, h) => {
+      drawRoundedCard(g, w / 2, h / 2, trayW, TRAY_H, {
+        fill: shade(t.colors.background, -0.02),
+        radius: t.radius.lg,
+        stroke: t.colors.border,
+        strokeWidth: t.stroke.thin,
+        strokeAlpha: 0.45,
+        highlight: 0,
+        bevel: 0.16,
+      }, t)
+    }).setPosition(W / 2, CONT_CY).setDepth(1)
+  }
+
   // ── Mode bar ────────────────────────────────────────────────────────────────
 
   private buildModeBar(): void {
-    const bar = this.add.graphics().setDepth(20)
-    bar.fillStyle(BAR_FILL, 1)
-    bar.fillRect(0, 0, W, MODE_BAR_H)
-    bar.lineStyle(1, BAR_BORDER, 1)
-    bar.lineBetween(0, MODE_BAR_H, W, MODE_BAR_H)
+    const t = this.theme
+    const barH = MODE_BAR_H + 2
+    bakeGraphics(this, W, barH, (g, w) => {
+      g.fillStyle(shade(t.colors.background, -0.025), 1)
+      g.fillRect(0, 0, w, MODE_BAR_H)
+      drawHighlight(g, w / 2, MODE_BAR_H / 2, w, MODE_BAR_H, 0, 0.02, t)
+      // A lit hairline above a dark one reads as a physical lip, not a divider.
+      g.fillStyle(t.colors.border, 0.55)
+      g.fillRect(0, MODE_BAR_H - 1, w, 1)
+      g.fillStyle(0x000000, 0.35)
+      g.fillRect(0, MODE_BAR_H, w, 2)
+    }).setPosition(W / 2, barH / 2).setDepth(20)
 
-    this.ui.createLabel({
-      x: this.layout.safeLeft(18), y: MODE_BAR_H / 2,
-      text: 'SORT LAB',
-      textScale: 'small', landscape: true,
-      color: '#9aa4d4', originX: 0, originY: 0.5,
-    }).setDepth(21)
+    this.add.text(this.p.layout.safeLeft(20), MODE_BAR_H / 2, 'SORT LAB',
+      this.p.text('caption', t.colors.muted))
+      .setOrigin(0, 0.5).setDepth(21)
+      .setLetterSpacing?.(2)
 
     // Segmented control, right-aligned within the bar
     const btnW = 138
     const gap  = 10
     const total = MODES.length * btnW + (MODES.length - 1) * gap
-    const startX = W - this.layout.insets.right - 18 - total
+    const startX = W - this.p.layout.insets.right - 18 - total
 
     MODES.forEach((m, i) => {
-      const handle = this.ui.createButton({
+      const handle = this.p.ui.createButton({
         x: startX + btnW / 2 + i * (btnW + gap),
         y: MODE_BAR_H / 2,
         text: m,
         width: btnW, height: 38,
         textScale: 'tiny', landscape: true,
-        color: 0x1c1c3a,
-        textColor: '#7b85b8',
-        radius: T.radius.sm,
+        color: t.colors.surface,
+        textColor: hex(t.colors.muted),
+        selectedColor: t.colors.primary,
+        selectedTextColor: hex(t.colors.text),
+        radius: t.radius.sm,
         shadow: false,
         // Landscape prototype: the portrait-sized default (120) would extend the
         // hit zone past the mode bar and steal taps from the object area.
@@ -444,6 +515,7 @@ export class SortLabScene extends Phaser.Scene {
 
     for (const cv of this.containerVisuals) {
       this.tweens.killTweensOf(cv.box)
+      this.tweens.killTweensOf(cv.shadow)
       cv.box.destroy()
       cv.shadow.destroy()
       cv.label.destroy()
@@ -453,8 +525,10 @@ export class SortLabScene extends Phaser.Scene {
 
     this.destroyPanel()
 
-    if (this.hintText) { this.hintText.destroy(); this.hintText = undefined }
-    if (this.hudText)  { this.hudText.destroy();  this.hudText  = undefined }
+    if (this.hintText)     { this.hintText.destroy();     this.hintText = undefined }
+    if (this.hudText)      { this.hudText.destroy();      this.hudText  = undefined }
+    if (this.progress)     { this.progress.destroy();     this.progress = undefined }
+    if (this.mistakeBadge) { this.mistakeBadge.destroy(); this.mistakeBadge = undefined }
   }
 
   private destroyPanel(): void {
@@ -485,8 +559,15 @@ export class SortLabScene extends Phaser.Scene {
   }
 
   private buildContainerVisuals(): void {
+    const t       = this.theme
     const cats    = getCategories(this.mode)
     const spacing = W / (cats.length + 1)
+
+    // Slot accents cycle through a fixed neutral ramp rather than mapping a
+    // category to its own colour. Tinting the RED bin red would make COLOR mode
+    // measurably easier than the other four — and this prototype exists to
+    // compare those five modes against each other.
+    const ramp = [t.colors.primary, t.colors.secondary, t.colors.accent, t.colors.success]
 
     this.containers = cats.map((cat, i) => ({
       category: cat,
@@ -496,49 +577,97 @@ export class SortLabScene extends Phaser.Scene {
       h:  CONT_H,
     }))
 
-    for (const c of this.containers) {
-      const shadow = addShadow(this, { x: c.cx, y: c.cy, width: c.w, height: c.h }, {
-        radius: T.radius.md,
-        offsetY: SHADOW_DY,
-        alpha: 0.35,
-      }).setDepth(4)
+    this.containers.forEach((c, i) => {
+      const accent = ramp[i % ramp.length]
 
-      // Drawn around local origin so scalePunch on receipt scales about centre.
-      const box = this.add.graphics().setPosition(c.cx, c.cy).setDepth(5)
+      const shPad = SHADOW_DY + t.shadows.card.spread * t.shadows.card.layers + 6
+      const shadow = bakeGraphics(this, c.w + shPad * 2, c.h + shPad * 2, (g, w, h) => {
+        drawShadow(g, w / 2, h / 2, c.w, c.h, { radius: t.radius.md, dy: SHADOW_DY }, t)
+      }).setPosition(c.cx, c.cy).setDepth(4)
 
-      const label = this.add.text(c.cx, c.cy + c.h / 2 - 15, c.category.toUpperCase(), {
-        fontSize: '12px', color: '#6b7aa8', fontStyle: 'bold',
-      }).setOrigin(0.5).setDepth(7)
+      // All three states are baked up front and toggled by visibility. They are
+      // held in a Container positioned on the bin, so a punch or a hover lift
+      // scales about the bin's centre regardless of which state is showing.
+      const states = [0, 1, 2].map(i =>
+        bakeGraphics(this, c.w + 8, c.h + 8, (g, w, h) => {
+          this.drawContainerState(g, w / 2, h / 2, c, accent, i === 2, i >= 1)
+        }).setVisible(i === 0),
+      )
+      const box = this.add.container(c.cx, c.cy, states).setDepth(5)
 
-      const cv: ContainerVisual = { data: c, shadow, box, label, eligible: false, hovered: false }
+      const label = this.add.text(c.cx, c.cy + c.h / 2 - 15, c.category.toUpperCase(),
+        this.p.text('caption', t.colors.muted))
+        .setOrigin(0.5).setDepth(7)
+
+      const cv: ContainerVisual = {
+        data: c, shadow, box, states, label, accent, eligible: false, hovered: false,
+      }
       this.drawContainer(cv)
       this.containerVisuals.push(cv)
-    }
+    })
+  }
+
+  /**
+   * Bins are recessed slots, not outlined boxes: a dark inner well inside a
+   * raised rim. The affordance ("something goes in here") comes from the form,
+   * so the eligible / hovered states only have to change colour temperature.
+   */
+  private drawContainerState(
+    g: Phaser.GameObjects.Graphics,
+    cx: number, cy: number,
+    c: Container, accent: number,
+    hovered: boolean, eligible: boolean,
+  ): void {
+    const t = this.theme
+    const { w, h } = c
+
+    const wellFill = hovered  ? mix(t.colors.surface, accent, 0.34)
+                   : eligible ? mix(t.colors.surface, accent, 0.16)
+                   : shade(t.colors.background, -0.015)
+
+    const rim = hovered  ? accent
+              : eligible ? mix(t.colors.border, accent, 0.55)
+              : t.colors.border
+
+    // Rim
+    drawRoundedCard(g, cx, cy, w, h, {
+      fill: t.colors.surface,
+      radius: t.radius.md,
+      stroke: rim,
+      strokeWidth: hovered ? t.stroke.base : t.stroke.thin,
+      strokeAlpha: eligible ? 1 : 0.7,
+      bevel: 0,
+    }, t)
+
+    // Recessed well — inverted lighting (dark top, lit bottom) is what sells
+    // "hole" instead of "button".
+    const iw = w - 12
+    const ih = h - 12
+    g.fillStyle(wellFill, 1)
+    g.fillRoundedRect(cx - iw / 2, cy - ih / 2, iw, ih, t.radius.sm)
+    g.fillStyle(0x000000, 0.22)
+    g.fillRoundedRect(cx - iw / 2, cy - ih / 2, iw, ih * 0.34, {
+      tl: t.radius.sm, tr: t.radius.sm, bl: 0, br: 0,
+    })
+    g.fillStyle(t.colors.highlight, 0.05)
+    g.fillRoundedRect(cx - iw / 2, cy + ih / 2 - ih * 0.2, iw, ih * 0.2, {
+      tl: 0, tr: 0, bl: t.radius.sm, br: t.radius.sm,
+    })
   }
 
   private drawContainer(cv: ContainerVisual): void {
-    const { w, h } = cv.data
-    const fill   = cv.hovered ? CONT_FILL_HOVER
-                 : cv.eligible ? CONT_FILL_ELIGIBLE
-                 : CONT_FILL
-    const stroke = cv.hovered ? CONT_STROKE_HOVER
-                 : cv.eligible ? CONT_STROKE_ELIGIBLE
-                 : CONT_STROKE
-    const strokeW = cv.eligible ? 2 : 1
-
-    cv.box.clear()
-    cv.box.fillStyle(fill, 1)
-    cv.box.fillRoundedRect(-w / 2, -h / 2, w, h, T.radius.md)
-    cv.box.lineStyle(strokeW, stroke, 1)
-    cv.box.strokeRoundedRect(-w / 2, -h / 2, w, h, T.radius.md)
-
-    cv.label.setColor(cv.hovered ? '#dce6ff' : cv.eligible ? '#a8bcf0' : '#6b7aa8')
+    const t = this.theme
+    const active = cv.hovered ? 2 : cv.eligible ? 1 : 0
+    cv.states.forEach((img, i) => img.setVisible(i === active))
+    cv.label.setColor(hex(
+      cv.hovered ? t.colors.text : cv.eligible ? mix(t.colors.text, cv.accent, 0.4) : t.colors.muted,
+    ))
   }
 
   /**
    * Containers brighten while an object is held, and brighten further under the
-   * pointer — the drop-target affordance the V2 layout lacked. Derived from the
-   * cached pointer position; redraws only on an actual state change.
+   * pointer. The hovered bin also lifts — a 3px rise plus a deeper shadow is a
+   * stronger "drop it here" signal than any colour change on its own.
    */
   private updateContainerStates(): void {
     const eligible = this.selectedId >= 0 && !this.roundDone
@@ -547,92 +676,137 @@ export class SortLabScene extends Phaser.Scene {
     for (const cv of this.containerVisuals) {
       const isHovered = hovered === cv.data
       if (cv.eligible !== eligible || cv.hovered !== isHovered) {
+        const lift = cv.hovered !== isHovered
         cv.eligible = eligible
         cv.hovered  = isHovered
         this.drawContainer(cv)
+        if (lift) {
+          this.tweens.killTweensOf(cv.box)
+          this.tweens.add({
+            targets: cv.box,
+            y: cv.data.cy + (isHovered ? -3 : 0),
+            scaleX: isHovered ? 1.03 : 1,
+            scaleY: isHovered ? 1.03 : 1,
+            duration: this.theme.duration.fast,
+            ease: this.theme.ease.out,
+          })
+        }
       }
     }
   }
 
   private buildHint(): void {
     const hintStr = this.mode === 'WEIGHT'
-      ? 'Tap object to feel its weight, then tap container  ·  Tap again to change selection'
+      ? 'Tap an object to feel its weight, then tap a bin  ·  Tap it again to change selection'
       : this.mode === 'BEHAVIOR'
-        ? 'Move cursor near objects to see behavior, then tap object → tap container'
-        : 'Tap object → tap container'
+        ? 'Move the cursor near objects to see how they react, then tap object → tap bin'
+        : 'Tap an object, then tap a bin'
 
-    this.hintText = this.ui.createLabel({
-      x: W / 2, y: HINT_Y,
-      text: hintStr,
-      textScale: 'tiny', landscape: true,
-      color: '#3f3f63',
-      align: 'center',
-    }).setDepth(6)
+    this.hintText = this.add.text(W / 2, HINT_Y, hintStr,
+      this.p.text('caption', mix(this.theme.colors.muted, this.theme.colors.background, 0.35)))
+      .setOrigin(0.5).setDepth(6)
   }
 
   private buildHud(): void {
-    this.hudText = this.ui.createLabel({
-      x: W - this.layout.insets.right - 20, y: HUD_Y,
-      text: '',
+    const t = this.theme
+
+    this.progress = this.p.ui.createProgressBar({
+      x: this.p.layout.safeLeft(20) + 90, y: HUD_Y,
+      width: 180, height: 10,
+      bgColor: shade(t.colors.background, 0.04),
+      fillColor: t.colors.success,
+      value: 0,
+      duration: t.duration.normal,
+    })
+    this.progress.container.setDepth(6)
+
+    this.hudText = this.add.text(this.p.layout.safeLeft(20) + 192, HUD_Y, '',
+      this.p.text('caption', t.colors.muted))
+      .setOrigin(0, 0.5).setDepth(6)
+
+    this.mistakeBadge = this.p.ui.createBadge({
+      x: W - this.p.layout.insets.right - 60, y: HUD_Y,
+      text: 'Mistakes 0',
       textScale: 'tiny', landscape: true,
-      color: '#4d4d70',
-      originX: 1, originY: 0.5,
-    }).setDepth(6)
+      color: t.colors.surface,
+      textColor: hex(t.colors.muted),
+      paddingX: 14,
+      height: 24,
+    })
+    this.mistakeBadge.container.setDepth(6)
+
+    this.hudSettled  = -1
+    this.hudMistakes = -1
     this.updateHud()
   }
 
   private updateHud(): void {
-    if (!this.hudText) return
-    const settled = this.objects.filter(o => o.settled).length
-    this.hudText.setText(`Sorted ${settled}/${this.objects.length}   ·   Mistakes ${this.mistakes}`)
+    let settled = 0
+    for (const o of this.objects) if (o.settled) settled++
+
+    if (settled !== this.hudSettled) {
+      this.hudSettled = settled
+      this.progress?.setValue(settled / Math.max(1, this.objects.length))
+      this.hudText?.setText(`${settled}/${this.objects.length} sorted`)
+    }
+
+    if (this.mistakes !== this.hudMistakes && this.mistakeBadge) {
+      this.hudMistakes = this.mistakes
+      this.mistakeBadge.setText(`Mistakes ${this.mistakes}`)
+      this.mistakeBadge.setColor(
+        this.mistakes === 0
+          ? this.theme.colors.surface
+          : mix(this.theme.colors.surface, this.theme.colors.danger, 0.35),
+      )
+    }
   }
 
   // ── Object graphics ─────────────────────────────────────────────────────────
 
   private buildObjectGraphics(): void {
+    const t = this.theme
+
     this.objects.forEach((obj, i) => {
       const r = drawRadius(this.mode, obj)
 
-      const shadow = this.mode === 'WEIGHT'
-        ? addShadow(this, { x: obj.x, y: obj.y, width: r * 2, height: r * 2 }, {
-            radius: T.radius.sm, offsetY: SHADOW_DY, alpha: 0.3,
-          }).setDepth(9)
-        : addShadow(this, { x: obj.x, y: obj.y }, {
-            radius: r, offsetY: SHADOW_DY, alpha: 0.3,
-          }).setDepth(9)
+      // Shadow sits at the object's own position; the drop offset lives inside
+      // the baked art, so syncObjVisuals only has to copy x/y.
+      const boxy = this.mode === 'WEIGHT' || (this.mode === 'SHAPE' && obj.shape === 'square')
+      const shPad = SHADOW_DY + t.shadows.card.spread * t.shadows.card.layers + 6
+      const shSize = r * 2 + shPad * 2
+      const shadow = bakeGraphics(this, shSize, shSize, (g, w, h) => {
+        if (boxy) drawShadow(g, w / 2, h / 2, r * 2, r * 2, { radius: t.radius.sm, dy: SHADOW_DY }, t)
+        else      drawShadowCircle(g, w / 2, h / 2, r, { dy: SHADOW_DY }, t)
+      }).setPosition(obj.x, obj.y).setDepth(9)
       this.objShadow.set(obj.id, shadow)
 
-      const gfx = this.add.graphics().setPosition(obj.x, obj.y).setDepth(10)
-      drawObjShape(gfx, this.mode, obj)
+      const size = r * 2 + 10
+      const gfx = bakeGraphics(this, size, size, (g, w, h) => {
+        drawObjShape(g, this.mode, obj, t, w / 2, h / 2)
+      }).setPosition(obj.x, obj.y).setDepth(10)
       this.objGfx.set(obj.id, gfx)
 
-      // Staggered pop-in. Uses a delayed tween rather than delayedCall so a
-      // rapid mode switch cannot fire a callback against a destroyed object.
+      // Staggered entrance. A delayed tween rather than delayedCall, so a rapid
+      // mode switch cannot fire a callback against a destroyed object.
       for (const go of [shadow, gfx]) {
-        go.setAlpha(0).setScale(0.6)
+        go.setAlpha(0).setScale(0.55)
         this.tweens.add({
           targets: go,
           alpha: go === shadow ? 0.999 : 1,
           scaleX: 1, scaleY: 1,
-          duration: T.duration.normal,
+          duration: t.duration.normal,
           delay: i * 45,
-          ease: 'Back.Out',
+          ease: t.ease.overshoot,
         })
       }
     })
-  }
-
-  private redrawObject(obj: SortObject): void {
-    const gfx = this.objGfx.get(obj.id)
-    if (!gfx) return
-    drawObjShape(gfx, this.mode, obj)
   }
 
   private syncObjVisuals(obj: SortObject): void {
     const gfx = this.objGfx.get(obj.id)
     const sh  = this.objShadow.get(obj.id)
     if (gfx) gfx.setPosition(obj.x, obj.y)
-    if (sh)  sh.setPosition(obj.x, obj.y + SHADOW_DY)
+    if (sh)  sh.setPosition(obj.x, obj.y)
   }
 
   // ── Selection ring ──────────────────────────────────────────────────────────
@@ -644,24 +818,20 @@ export class SortLabScene extends Phaser.Scene {
   private showSelectionRing(obj: SortObject): void {
     const ring = this.selectionRing
     if (!ring) return
-    // Same radius expression as V2's inline ring, so the indicator sits exactly
-    // where it used to.
+    // Same radius expression as V3, so the indicator sits exactly where it used to.
     const r = hitRadius(this.mode, obj) + 7
 
     this.tweens.killTweensOf(ring)
     ring.clear()
-    ring.lineStyle(2, 0xffffff, 0.9)
-    ring.strokeCircle(0, 0, r)
-    ring.lineStyle(4, 0xffffff, 0.18)
-    ring.strokeCircle(0, 0, r + 3)
-    ring.setPosition(obj.x, obj.y).setScale(1).setVisible(true)
+    drawSelectionRing(ring, 0, 0, r, this.theme.colors.accent, this.theme)
+    ring.setPosition(obj.x, obj.y).setScale(1).setAlpha(1).setVisible(true)
 
     this.tweens.add({
       targets: ring,
       scaleX: 1.07, scaleY: 1.07,
       duration: 620,
       yoyo: true, repeat: -1,
-      ease: 'Sine.InOut',
+      ease: this.theme.ease.inOut,
     })
   }
 
@@ -687,13 +857,12 @@ export class SortLabScene extends Phaser.Scene {
           // Tap selected object again → deselect
           hitObj.selected = false
           this.selectedId = -1
-          this.redrawObject(hitObj)
           this.hideSelectionRing()
         } else {
           // Deselect previous
           if (this.selectedId >= 0) {
             const prev = this.objects.find(o => o.id === this.selectedId)
-            if (prev) { prev.selected = false; this.redrawObject(prev) }
+            if (prev) prev.selected = false
           }
 
           if (this.mode === 'WEIGHT' && !this.bouncingIds.has(hitObj.id)) {
@@ -738,10 +907,14 @@ export class SortLabScene extends Phaser.Scene {
   private selectObj(obj: SortObject): void {
     obj.selected    = true
     this.selectedId = obj.id
-    this.redrawObject(obj)
     this.showSelectionRing(obj)
     const gfx = this.objGfx.get(obj.id)
-    if (gfx) this.juice.select(gfx)
+    if (gfx) this.p.juice.select(gfx)
+    // A ring at the tap point acknowledges the touch on the same frame, before
+    // any of the selection state has finished animating.
+    this.p.vfx.ring(obj.x, obj.y, hitRadius(this.mode, obj), {
+      color: this.theme.colors.accent, duration: this.theme.duration.normal,
+    })
   }
 
   // ── Placement ───────────────────────────────────────────────────────────────
@@ -760,7 +933,6 @@ export class SortLabScene extends Phaser.Scene {
     // Deselect visually
     obj.selected    = false
     this.selectedId = -1
-    this.redrawObject(obj)
     this.hideSelectionRing()
 
     const cv = this.containerVisuals.find(v => v.data === container)
@@ -771,28 +943,40 @@ export class SortLabScene extends Phaser.Scene {
       const tx = container.cx + this.settleOffset(slot)
       const ty = container.cy - 6
 
-      // Fly to container
-      this.tweens.add({
-        targets:  gfx,
-        x:        tx,
-        y:        ty,
-        scaleX:   0.5,
-        scaleY:   0.5,
-        duration: 280,
-        ease:     'Quad.Out',
-        onUpdate: () => { obj.x = gfx.x; obj.y = gfx.y; this.syncObjVisuals(obj) },
+      // Fly to container. Same 280ms as V3, but on an arc: the object lifts
+      // before it drops in, which reads as thrown rather than dragged.
+      const liftY = Math.min(obj.y, ty) - 46
+      this.tweens.chain({
+        targets: gfx,
         onComplete: () => {
           obj.x       = tx
           obj.y       = ty
           obj.settled = true
-          this.redrawObject(obj)
           this.syncObjVisuals(obj)
           const sh = this.objShadow.get(obj.id)
           if (sh) sh.setScale(0.5)
-          this.juice.success(container.cx, container.cy - 10, cv?.box, '✓')
+          this.p.juice.success(container.cx, container.cy - 10, {
+            target: cv?.box,
+            intensity: 'small',
+            color: cv?.accent ?? this.theme.colors.success,
+          })
           this._animating = false
           this.checkRoundDone()
         },
+        tweens: [
+          {
+            x: (obj.x + tx) / 2, y: liftY,
+            scaleX: 0.78, scaleY: 0.78,
+            duration: 130, ease: this.theme.ease.out,
+            onUpdate: () => { obj.x = gfx.x; obj.y = gfx.y; this.syncObjVisuals(obj) },
+          },
+          {
+            x: tx, y: ty,
+            scaleX: 0.5, scaleY: 0.5,
+            duration: 150, ease: 'Quad.In',
+            onUpdate: () => { obj.x = gfx.x; obj.y = gfx.y; this.syncObjVisuals(obj) },
+          },
+        ],
       })
     } else {
       this.mistakes++
@@ -801,15 +985,16 @@ export class SortLabScene extends Phaser.Scene {
       gfx.setPosition(container.cx, container.cy)
       obj.x = container.cx; obj.y = container.cy
       this.syncObjVisuals(obj)
-      // Restrained: burst + gentle shake, no text. The HUD mistake count is the
+      // Restrained: burst + bin wobble, no text. The HUD mistake count is the
       // durable signal.
-      this.juice.fail(container.cx, container.cy)
+      this.p.juice.fail(container.cx, container.cy, { intensity: 'small' })
+      if (cv) this.p.anim.wobble(cv.box, 5)
       this.tweens.add({
         targets:  gfx,
         x:        origX,
         y:        origY,
         duration: 300,
-        ease:     'Back.Out',
+        ease:     this.theme.ease.overshoot,
         onUpdate: () => { obj.x = gfx.x; obj.y = gfx.y; this.syncObjVisuals(obj) },
         onComplete: () => {
           obj.x = origX; obj.y = origY
@@ -827,6 +1012,7 @@ export class SortLabScene extends Phaser.Scene {
     if (!gfx) return
     this.bouncingIds.add(obj.id)
 
+    // Heights and durations are the mechanic — unchanged.
     const bounceY = obj.weight === 'light' ? 20 : obj.weight === 'medium' ? 10 : 3
     const dur     = obj.weight === 'light' ? 180 : obj.weight === 'medium' ? 260 : 380
     const startY  = obj.y
@@ -843,6 +1029,14 @@ export class SortLabScene extends Phaser.Scene {
         gfx.y  = startY
         obj.y  = startY
         this.syncObjVisuals(obj)
+        // Landing puff, scaled to how hard it hit — the same information the
+        // bounce already carries, in a second channel.
+        this.p.vfx.spark(obj.x, obj.y + drawRadius(this.mode, obj), {
+          color: this.theme.colors.muted,
+          intensity: obj.weight === 'heavy' ? 'medium' : 'small',
+          distance: 40,
+          size: 14,
+        })
         this.bouncingIds.delete(obj.id)
         this.bounceTweens.delete(tween)
         this.selectObj(obj)
@@ -896,55 +1090,68 @@ export class SortLabScene extends Phaser.Scene {
   private checkRoundDone(): void {
     if (this.objects.every(o => o.settled)) {
       this.roundDone = true
-      this.juice.levelComplete()
+      this.p.juice.levelComplete({
+        targets: this.containerVisuals.map(cv => cv.box),
+      })
       const elapsed  = Math.round((this.time.now - this.startTime) / 1000)
       this.time.delayedCall(400, () => this.showCompletionPanel(elapsed))
     }
   }
 
   private showCompletionPanel(elapsedSec: number): void {
-    const { x: cx, y: cy } = this.layout.center()
-    const panelW = 380, panelH = 240
+    const t = this.theme
+    const { x: cx, y: cy } = this.p.layout.center()
+    const panelW = 400, panelH = 250
 
-    this.panel = this.ui.createPanel({
+    this.panel = this.p.ui.createPanel({
       x: cx, y: cy,
       width: panelW, height: panelH,
-      fill: 0x14142c,
-      stroke: 0x3a3a6e,
-      radius: T.radius.lg,
+      fill: t.colors.surface,
+      stroke: t.colors.border,
+      strokeWidth: t.stroke.thin,
+      radius: t.radius.lg,
       shadow: true,
     })
     this.panel.container.setDepth(500)
 
-    const title = this.ui.createLabel({
-      x: 0, y: -panelH / 2 + 38,
-      text: 'SORT COMPLETE',
-      textScale: 'heading', landscape: true,
-      color: T.color.success,
-      align: 'center',
-    })
+    const title = this.add.text(0, -panelH / 2 + 42, 'SORT COMPLETE',
+      this.p.text('subheading', t.colors.success)).setOrigin(0.5)
     this.panel.container.add(title)
 
-    const stats = this.ui.createLabel({
-      x: 0, y: -14,
-      text: `Objects sorted: ${this.objects.length}\nMistakes: ${this.mistakes}\nTime: ${elapsedSec}s`,
-      textScale: 'small', landscape: true,
-      color: '#9aa4d4',
-      align: 'center',
+    const rule = this.add.graphics()
+    rule.fillStyle(t.colors.border, 0.7)
+    rule.fillRect(-70, -panelH / 2 + 66, 140, 1)
+    this.panel.container.add(rule)
+
+    // Stats as a two-column read rather than one centred block: the numbers are
+    // what the playtester is here for, so they get their own alignment.
+    const rows: Array<[string, string]> = [
+      ['Objects sorted', String(this.objects.length)],
+      ['Mistakes',       String(this.mistakes)],
+      ['Time',           `${elapsedSec}s`],
+    ]
+    rows.forEach(([label, value], i) => {
+      const ry = -22 + i * 26
+      this.panel!.container.add(
+        this.add.text(-110, ry, label, this.p.text('caption', t.colors.muted)).setOrigin(0, 0.5),
+      )
+      this.panel!.container.add(
+        this.add.text(110, ry, value,
+          this.p.text('caption', i === 1 && this.mistakes > 0 ? t.colors.danger : t.colors.text),
+        ).setOrigin(1, 0.5),
+      )
     })
-    stats.setLineSpacing(6)
-    this.panel.container.add(stats)
 
     const hasNext = this.round === 0
-    const btnY    = cy + panelH / 2 - 44
+    const btnY    = cy + panelH / 2 - 46
 
-    const tryAgain = this.ui.createButton({
-      x: cx - (hasNext ? 82 : 0), y: btnY,
+    const tryAgain = this.p.ui.createButton({
+      x: cx - (hasNext ? 86 : 0), y: btnY,
       text: 'Try Again',
-      width: 150, height: 42,
+      width: 156, height: 44,
       textScale: 'small', landscape: true,
-      color: 0x2a2a52,
-      radius: T.radius.sm,
+      color: t.colors.surfaceAlt,
+      radius: t.radius.sm,
       minTouch: 0,
       onPress: () => { this.clearAll(); this.startMode(this.mode, this.round) },
     })
@@ -952,13 +1159,13 @@ export class SortLabScene extends Phaser.Scene {
     this.panelButtons.push(tryAgain)
 
     if (hasNext) {
-      const nextRound = this.ui.createButton({
-        x: cx + 82, y: btnY,
+      const nextRound = this.p.ui.createButton({
+        x: cx + 86, y: btnY,
         text: 'Next Round →',
-        width: 150, height: 42,
+        width: 156, height: 44,
         textScale: 'small', landscape: true,
-        color: 0x2f5bb7,
-        radius: T.radius.sm,
+        color: t.colors.primary,
+        radius: t.radius.sm,
         minTouch: 0,
         onPress: () => { this.clearAll(); this.startMode(this.mode, 1) },
       })
@@ -967,19 +1174,14 @@ export class SortLabScene extends Phaser.Scene {
     }
 
     // Panel and buttons arrive together
-    this.panel.container.setAlpha(0).setScale(0.85)
-    this.tweens.add({
-      targets: this.panel.container,
-      alpha: 1, scaleX: 1, scaleY: 1,
-      duration: T.duration.normal, ease: 'Back.Out',
-    })
+    this.p.anim.pop(this.panel.container)
     for (const b of this.panelButtons) {
       b.container.setAlpha(0)
       this.tweens.add({
         targets: b.container,
         alpha: 1,
-        duration: T.duration.fast,
-        delay: T.duration.fast,
+        duration: t.duration.fast,
+        delay: t.duration.fast,
       })
     }
   }

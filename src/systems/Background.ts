@@ -1,4 +1,5 @@
 import Phaser from 'phaser'
+import { bakeGraphics } from '../presentation/Draw'
 
 export type BackgroundPattern = 'none' | 'dots' | 'grid'
 
@@ -50,25 +51,29 @@ export function createBackground(
   base.fillRect(0, 0, W, H)
   objects.push(base)
 
-  // Pattern
+  // Pattern. Baked into a texture rather than left as a live Graphics: a dot
+  // field is hundreds of fillCircle commands, and Phaser re-walks and
+  // re-tessellates a Graphics command list on every frame.
   const pattern = opts.pattern ?? 'none'
   if (pattern !== 'none') {
     const spacing = opts.patternSpacing ?? 64
     const pColor  = opts.patternColor ?? 0xffffff
     const pAlpha  = opts.patternAlpha ?? 0.04
-    const g = scene.add.graphics().setDepth(depth + 1)
 
-    if (pattern === 'dots') {
-      g.fillStyle(pColor, pAlpha)
-      for (let x = spacing / 2; x < W; x += spacing) {
-        for (let y = spacing / 2; y < H; y += spacing) g.fillCircle(x, y, 2)
+    const img = bakeGraphics(scene, W, H, g => {
+      if (pattern === 'dots') {
+        g.fillStyle(pColor, pAlpha)
+        for (let x = spacing / 2; x < W; x += spacing) {
+          for (let y = spacing / 2; y < H; y += spacing) g.fillCircle(x, y, 2)
+        }
+      } else {
+        g.lineStyle(1, pColor, pAlpha)
+        for (let x = spacing; x < W; x += spacing) g.lineBetween(x, 0, x, H)
+        for (let y = spacing; y < H; y += spacing) g.lineBetween(0, y, W, y)
       }
-    } else {
-      g.lineStyle(1, pColor, pAlpha)
-      for (let x = spacing; x < W; x += spacing) g.lineBetween(x, 0, x, H)
-      for (let y = spacing; y < H; y += spacing) g.lineBetween(0, y, W, y)
-    }
-    objects.push(g)
+    })
+    img.setPosition(W / 2, H / 2).setDepth(depth + 1)
+    objects.push(img)
   }
 
   // Ambient motes

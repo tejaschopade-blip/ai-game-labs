@@ -1,5 +1,7 @@
 import Phaser from 'phaser'
 import { DesignTokens } from '../core/DesignTokens'
+import { Theme, ThemeName, resolveTheme, hex } from '../presentation/Theme'
+import { drawRoundedCard, drawShadow, drawPill } from '../presentation/Draw'
 
 const T = DesignTokens
 
@@ -49,6 +51,9 @@ export interface ButtonOptions {
   /** Fill colour in the normal state. */
   color?: number
   textColor?: string
+  /** Fill in the `selected` state. Defaults to a slight lightening of `color`. */
+  selectedColor?: number
+  selectedTextColor?: string
   textScale?: TextScale
   radius?: number
   shadow?: boolean
@@ -125,6 +130,28 @@ export interface IconOptions {
   minTouch?: number
 }
 
+export interface BadgeOptions {
+  x: number
+  y: number
+  text: string
+  /** Pill fill. Defaults to the theme's surfaceAlt. */
+  color?: number
+  textColor?: string
+  textScale?: TextScale
+  /** Horizontal padding around the text. */
+  paddingX?: number
+  height?: number
+  shadow?: boolean
+  landscape?: boolean
+}
+
+export interface BadgeHandle {
+  container: Phaser.GameObjects.Container
+  setText(text: string): void
+  setColor(color: number): void
+  destroy(): void
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -136,32 +163,23 @@ function shade(color: number, pct: number): number {
   return Phaser.Display.Color.GetColor(f(c.red), f(c.green), f(c.blue))
 }
 
-/** Draw a rounded box centred on (0,0) into an existing Graphics object. */
-function drawBox(
-  g: Phaser.GameObjects.Graphics,
-  w: number,
-  h: number,
-  radius: number,
-  fill: number,
-  fillAlpha: number,
-  stroke?: number,
-  strokeWidth = 0,
-): void {
-  g.clear()
-  g.fillStyle(fill, fillAlpha)
-  g.fillRoundedRect(-w / 2, -h / 2, w, h, radius)
-  if (stroke !== undefined && strokeWidth > 0) {
-    g.lineStyle(strokeWidth, stroke, 1)
-    g.strokeRoundedRect(-w / 2, -h / 2, w, h, radius)
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // UIFactory
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class UIFactory {
-  constructor(private scene: Phaser.Scene) {}
+  private theme: Theme
+
+  /**
+   * `theme` controls corner depth (sheen/bevel), shadow softness and the font
+   * family — not the fill colours, which every existing call site passes
+   * explicitly. Omitting it keeps the dark `puzzle` personality.
+   */
+  constructor(private scene: Phaser.Scene, theme?: ThemeName | Theme) {
+    this.theme = resolveTheme(theme)
+  }
+
+  setTheme(theme: ThemeName | Theme): void { this.theme = resolveTheme(theme) }
 
   // ───────────────────────────────────────────────────────────────────────────
   // Foundation V2 — original API. Signatures are preserved exactly; these keep
@@ -170,6 +188,7 @@ export class UIFactory {
 
   label(x: number, y: number, text: string, style?: Phaser.Types.GameObjects.Text.TextStyle): Phaser.GameObjects.Text {
     return this.scene.add.text(x, y, text, {
+      fontFamily: this.theme.fontFamily,
       color: T.color.text,
       fontSize: T.typography.body.fontSize,
       ...style,
@@ -219,17 +238,33 @@ export class UIFactory {
   }
 
   toast(text: string, duration = T.ui.toastDuration): void {
-    const cx = this.scene.scale.width / 2
-    const cy = this.scene.scale.height - 80
-    const t = this.scene.add.text(cx, cy, text, {
+    const scene = this.scene
+    const th = this.theme
+    const cx = scene.scale.width / 2
+    const cy = scene.scale.height - 80
+
+    const txt = scene.add.text(0, 0, text, {
+      fontFamily: th.fontFamily,
       color: T.color.text,
       fontSize: T.typography.small.fontSize,
-      backgroundColor: '#000000bb',
-      padding: { x: 16, y: 10 },
-    }).setOrigin(0.5).setScrollFactor(0).setDepth(9000).setAlpha(0)
-    this.scene.tweens.add({ targets: t, alpha: 1, duration: 200 })
-    this.scene.time.delayedCall(duration - 300, () =>
-      this.scene.tweens.add({ targets: t, alpha: 0, duration: 300, onComplete: () => t.destroy() })
+    }).setOrigin(0.5)
+
+    const w = txt.width + 44
+    const h = txt.height + 22
+    const bg = scene.add.graphics()
+    drawShadow(bg, 0, 0, w, h, { radius: h / 2 }, th)
+    drawPill(bg, 0, 0, w, h, { fill: th.colors.surfaceAlt, stroke: th.colors.border, strokeWidth: th.stroke.thin }, th)
+
+    const container = scene.add.container(cx, cy, [bg, txt])
+      .setScrollFactor(0).setDepth(9000).setAlpha(0)
+
+    scene.tweens.add({ targets: container, alpha: 1, y: cy - 10, duration: th.duration.normal, ease: th.ease.overshoot })
+    scene.time.delayedCall(Math.max(0, duration - 300), () =>
+      scene.tweens.add({
+        targets: container, alpha: 0, y: cy - 30,
+        duration: 300, ease: th.ease.in,
+        onComplete: () => container.destroy(),
+      })
     )
   }
 
@@ -251,8 +286,7 @@ export class UIFactory {
     let shadowGfx: Phaser.GameObjects.Graphics | undefined
     if (useShadow) {
       shadowGfx = scene.add.graphics()
-      shadowGfx.setPosition(T.shadow.offsetX, T.shadow.offsetY)
-      drawBox(shadowGfx, w, h, radius, T.shadow.color, T.shadow.alpha)
+      drawShadow(shadowGfx, 0, 0, w, h, { radius }, this.theme)
       children.push(shadowGfx)
     }
 
@@ -277,28 +311,61 @@ export class UIFactory {
     let state: ButtonState = opts.state ?? 'normal'
     let pointerHeld = false
 
+    const th = this.theme
+
     const redraw = (): void => {
+      bg.clear()
       switch (state) {
         case 'pressed':
-          drawBox(bg, w, h, radius, shade(base, -0.08), 1)
+          // Sheen is suppressed while held: a lit top edge on a pressed button
+          // reads as "still raised" and fights the scale-down.
+          drawRoundedCard(bg, 0, 0, w, h,
+            { fill: shade(base, -0.10), radius, highlight: 0, bevel: 0 }, th)
           break
         case 'disabled':
-          drawBox(bg, w, h, radius, base, 0.35)
+          drawRoundedCard(bg, 0, 0, w, h,
+            { fill: base, fillAlpha: 0.35, radius, highlight: 0, bevel: 0 }, th)
           break
-        case 'selected':
-          drawBox(bg, w, h, radius, shade(base, 0.06), 1, shade(base, 0.35), 4)
+        case 'selected': {
+          const sel = opts.selectedColor ?? shade(base, 0.06)
+          drawRoundedCard(bg, 0, 0, w, h, {
+            fill: sel, radius,
+            stroke: shade(sel, 0.28), strokeWidth: th.stroke.base,
+          }, th)
           break
+        }
         default:
-          drawBox(bg, w, h, radius, base, 1)
+          drawRoundedCard(bg, 0, 0, w, h, { fill: base, radius }, th)
       }
+      txt.setColor(
+        state === 'selected' && opts.selectedTextColor
+          ? opts.selectedTextColor
+          : (opts.textColor ?? T.color.text),
+      )
       txt.setAlpha(state === 'disabled' ? 0.5 : 1)
       if (shadowGfx) shadowGfx.setAlpha(state === 'disabled' ? 0.4 : 1)
-      container.setScale(state === 'pressed' ? 0.96 : 1)
+    }
+
+    // Press sinks the button toward its shadow; release overshoots back. Both
+    // are tweened — an instant scale snap is what makes a button feel like a
+    // debug rectangle even when the hit handling is correct.
+    const applyScale = (to: number, duration: number, ease: string): void => {
+      scene.tweens.killTweensOf(container)
+      scene.tweens.add({ targets: container, scaleX: to, scaleY: to, duration, ease })
     }
 
     const setState = (next: ButtonState): void => {
+      const wasPressed = state === 'pressed'
       state = next
       redraw()
+      if (next === 'pressed') {
+        applyScale(0.95, th.duration.micro, th.ease.out)
+        if (shadowGfx) shadowGfx.setAlpha(0.5)
+      } else if (wasPressed) {
+        applyScale(1, th.duration.fast, th.ease.overshoot)
+      } else {
+        container.setScale(1)
+      }
     }
 
     // Any exit path must clear `pointerHeld`, or the button sticks in `pressed`.
@@ -361,13 +428,12 @@ export class UIFactory {
 
     if (opts.shadow ?? true) {
       const shadowGfx = scene.add.graphics()
-      shadowGfx.setPosition(T.shadow.offsetX, T.shadow.offsetY)
-      drawBox(shadowGfx, w, h, radius, T.shadow.color, T.shadow.alpha)
+      drawShadow(shadowGfx, 0, 0, w, h, { radius, ...this.theme.shadows.floating }, this.theme)
       children.push(shadowGfx)
     }
 
     const bg = scene.add.graphics()
-    drawBox(bg, w, h, radius, fill, 1, stroke, strokeWidth)
+    drawRoundedCard(bg, 0, 0, w, h, { fill, radius, stroke, strokeWidth, inset: true }, this.theme)
     children.push(bg)
 
     let titleText: Phaser.GameObjects.Text | undefined
@@ -440,7 +506,7 @@ export class UIFactory {
     const duration = opts.duration ?? T.duration.normal
 
     const bg = scene.add.graphics()
-    drawBox(bg, w, h, radius, bgColor, 1)
+    drawRoundedCard(bg, 0, 0, w, h, { fill: bgColor, radius, highlight: 0, bevel: 0.18 }, this.theme)
 
     const fillGfx = scene.add.graphics()
     const container = scene.add.container(opts.x, opts.y, [bg, fillGfx])
@@ -454,8 +520,7 @@ export class UIFactory {
       if (fw <= 0) return
       // Clamp the corner radius on very short fills so it stays a clean pill.
       const r = Math.min(radius, fw / 2)
-      fillGfx.fillStyle(fillColor, 1)
-      fillGfx.fillRoundedRect(-w / 2, -h / 2, fw, h, r)
+      drawRoundedCard(fillGfx, -w / 2 + fw / 2, 0, fw, h, { fill: fillColor, radius: r }, this.theme)
     }
 
     paint(value)
@@ -505,7 +570,11 @@ export class UIFactory {
 
     if (opts.background !== undefined) {
       const chip = scene.add.graphics()
-      drawBox(chip, size * 1.6, size * 1.6, opts.radius ?? T.radius.pill, opts.background, opts.backgroundAlpha ?? 1)
+      drawRoundedCard(chip, 0, 0, size * 1.6, size * 1.6, {
+        fill: opts.background,
+        fillAlpha: opts.backgroundAlpha ?? 1,
+        radius: opts.radius ?? T.radius.pill,
+      }, this.theme)
       children.push(chip)
     }
 
@@ -560,6 +629,41 @@ export class UIFactory {
     }
   }
 
+  /**
+   * Pill-shaped chip for counters, statuses and category tags. Sizes itself to
+   * its text, so `setText` reflows the pill rather than overflowing it.
+   */
+  createBadge(opts: BadgeOptions): BadgeHandle {
+    const scene = this.scene
+    const th = this.theme
+    const padX = opts.paddingX ?? 22
+    let color = opts.color ?? th.colors.surfaceAlt
+
+    const txt = scene.add.text(0, 0, opts.text, {
+      color: opts.textColor ?? hex(th.colors.text),
+      ...this.textStyle(opts.textScale ?? 'small', opts.landscape ?? false),
+    }).setOrigin(0.5)
+
+    const bg = scene.add.graphics()
+    const container = scene.add.container(opts.x, opts.y, [bg, txt])
+
+    const paint = (): void => {
+      const h = opts.height ?? txt.height + 16
+      const w = txt.width + padX * 2
+      bg.clear()
+      if (opts.shadow ?? false) drawShadow(bg, 0, 0, w, h, { radius: h / 2 }, th)
+      drawPill(bg, 0, 0, w, h, { fill: color }, th)
+    }
+    paint()
+
+    return {
+      container,
+      setText: (next: string) => { txt.setText(next); paint() },
+      setColor: (next: number) => { color = next; paint() },
+      destroy: () => container.destroy(),
+    }
+  }
+
   // ───────────────────────────────────────────────────────────────────────────
 
   /**
@@ -569,7 +673,10 @@ export class UIFactory {
    */
   private textStyle(scale: TextScale, landscape: boolean): Phaser.Types.GameObjects.Text.TextStyle {
     const entry = (landscape ? T.typography : T.text)[scale] as { fontSize: string; fontStyle?: string }
-    const style: Phaser.Types.GameObjects.Text.TextStyle = { fontSize: entry.fontSize }
+    const style: Phaser.Types.GameObjects.Text.TextStyle = {
+      fontFamily: this.theme.fontFamily,
+      fontSize: entry.fontSize,
+    }
     if (entry.fontStyle) style.fontStyle = entry.fontStyle
     return style
   }

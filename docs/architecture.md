@@ -10,6 +10,7 @@ Foundation (stable, shared)
     src/core/        Constants, GameConfig, DesignTokens, PrototypeConfig
     src/scenes/      BootScene, PreloadScene, PrototypeScene (template)
     src/systems/     InputManager, AudioManager, VFXManager, AnimHelper, CameraManager, EventBus
+    src/presentation/ Theme, Draw, Anim, Vfx, Touch, Backgrounds, Juice
     src/ui/          DebugOverlay, UIFactory
     src/utils/       AssetKeys
 ```
@@ -47,6 +48,23 @@ To switch the active prototype, set `ACTIVE_SCENE` and `PROTOTYPE_NAME` in `src/
 | Shadow *(V3)* | `src/systems/Shadow.ts` | `addShadow()` — standalone drop shadow for flat primitives |
 | Background *(V3)* | `src/systems/Background.ts` | Gradient, pattern and ambient-mote atmosphere (Graphics only) |
 | Transitions *(V3)* | `src/systems/Transitions.ts` | Scene fadeIn/fadeOut/transitionTo |
+
+### Presentation layer *(V4)*
+
+| System | File | Purpose |
+|---|---|---|
+| Theme | `src/presentation/Theme.ts` | 5 visual personalities, typography ramp, per-scene scaling |
+| Draw | `src/presentation/Draw.ts` | Rounded cards, soft circles, tiles, layered shadows, rings, `bakeGraphics` |
+| Anim | `src/presentation/Anim.ts` | pop/punch/bounce/shake/wobble/float/pulse/spin/spring/slide/fade/stagger |
+| Vfx | `src/presentation/Vfx.ts` | burst/spark/ring/glow/confetti/trail/floatingText |
+| Touch | `src/presentation/Touch.ts` | `makePressable()` — press lifecycle + forgiving hit areas |
+| Backgrounds | `src/presentation/Backgrounds.ts` | Themed presets + vignette / waves / paper |
+| Juice | `src/presentation/Juice.ts` | select/success/fail/collect/destroy/impact/levelComplete |
+| — | `src/presentation/index.ts` | `createPresentation(scene, opts)` one-call bundle |
+
+`createPresentation()` is the entry point for new prototypes. `GameJuice` is now
+a compatibility facade over `Juice`; `UIFactory` renders through `Draw` and is
+theme-aware. Full guide: **`docs/presentation.md`**.
 
 ---
 

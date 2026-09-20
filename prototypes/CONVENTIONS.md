@@ -62,30 +62,41 @@ scene: [..., YourScene],
 
 ### 5. Scene class boilerplate
 
+Start every new prototype from the presentation layer — see
+`docs/presentation.md` for the full API.
+
 ```typescript
 import Phaser from 'phaser'
-import { VFXManager } from '../../src/systems/VFXManager'
+import { applyPrototypeConfig } from '../../src/core/PrototypeConfig'
+import { createPresentation, Presentation } from '../../src/presentation'
+import { fadeIn } from '../../src/systems/Transitions'
 import { DebugOverlay } from '../../src/ui/DebugOverlay'
 
 export class YourScene extends Phaser.Scene {
   private overlay!: DebugOverlay
-  private vfx!: VFXManager
+  private p!: Presentation
 
   constructor() { super({ key: 'YourScene' }) }
 
   create(): void {
-    const W = this.scale.width, H = this.scale.height
+    // New prototypes are portrait 1080x1920. Declare it FIRST — the
+    // presentation layer scales its geometry to the current design space.
+    applyPrototypeConfig(this, {
+      name: '0NN-name', sceneKey: 'YourScene', orientation: 'portrait',
+    })
 
-    this.vfx = new VFXManager(this)
+    this.p = createPresentation(this, { theme: 'cozy', background: true })
+
     this.overlay = new DebugOverlay(this, '0NN-name')
-
-    // optional watches:
     this.overlay.addWatch('Label', () => String(this.someValue))
 
-    // scene background:
-    this.add.rectangle(W / 2, H / 2, W, H, 0x0a0a14)
+    // Pieces: draw through Draw helpers, then bake anything static.
+    // UI: this.p.ui.createButton / createPanel / createBadge / createLabel
+    // Text: this.add.text(x, y, 'Score', this.p.text('heading'))
+    // Touch: this.p.press(tile, { hitRadius: 60, onPress: () => ... })
+    // Feedback: this.p.juice.success(x, y, { target: tile })
 
-    this.vfx.fadeTransition(300)  // fade in on scene start
+    fadeIn(this)
   }
 
   update(): void {
@@ -93,6 +104,15 @@ export class YourScene extends Phaser.Scene {
   }
 }
 ```
+
+> **Do not** hand-roll buttons, panels, shadows, press animations or particle
+> bursts inside a prototype. Check `src/presentation/` first — see rules 16–24
+> in `docs/ai-rules.md`.
+
+> **Bake static art.** A Phaser `Graphics` re-tessellates its whole command list
+> every frame. Anything that does not change per frame goes through
+> `bakeGraphics(scene, w, h, draw)`, which returns an `Image`. Measured on this
+> repo: 20fps → 36fps in prototype 009, 25fps → 56fps on the menu.
 
 ---
 
@@ -275,7 +295,8 @@ this.input.on('wheel', (_p, _o, _dx, deltaY) => {
 | 008 | Block Placement | `BlockPlacementScene` |
 | 009 | Sort Lab | `SortLabScene` |
 | 010 | Cozy Maze | `CozyMazeScene` |
-| **011** | **next** | — |
+| 011 | Loop Sort DNA | `LoopSortScene` |
+| **012** | **next** | — |
 
 ---
 

@@ -1,5 +1,9 @@
 import Phaser from 'phaser'
 import { applyLandscapeDesign } from '../core/PrototypeConfig'
+import {
+  createPresentation, Presentation,
+  drawRoundedCard, drawShadow, bakeGraphics, hex, shade, mix,
+} from '../presentation'
 
 interface ProtoEntry {
   key: string
@@ -90,6 +94,8 @@ const PROTOTYPES: ProtoEntry[] = [
 ]
 
 export class GameSelectScene extends Phaser.Scene {
+  private p!: Presentation
+
   constructor() { super({ key: 'GameSelectScene' }) }
 
   create(): void {
@@ -97,13 +103,20 @@ export class GameSelectScene extends Phaser.Scene {
     // would leave the menu at portrait dimensions on ESC. No-op at 960x540.
     applyLandscapeDesign(this)
 
+    // The menu is the first thing anyone sees, so it uses the same presentation
+    // layer the prototypes do. Its own background is drawn below with
+    // scrollFactor 0 rather than via the preset, because this scene scrolls its
+    // camera and a world-space background would scroll with the list.
+    this.p = createPresentation(this)
+    const t = this.p.theme
+
     const W = this.scale.width
     const H = this.scale.height
     const cardW  = Math.min(480, W - 40)
     const cardH  = 64
     const cardGap = 12
     const topPad  = 90   // below fixed header
-    const botPad  = 48
+    const botPad  = 76   // clears the fixed footer + its fade
 
     const contentH = topPad + PROTOTYPES.length * (cardH + cardGap) - cardGap + botPad
     const maxScroll = Math.max(0, contentH - H)
@@ -111,69 +124,138 @@ export class GameSelectScene extends Phaser.Scene {
     cam.setBounds(0, 0, W, Math.max(H, contentH))
 
     // ── Fixed background ─────────────────────────────────────────────────────
-    this.add.rectangle(W / 2, H / 2, W, H, 0x0a0a14)
-      .setScrollFactor(0).setDepth(0)
+    const bgTop = shade(t.colors.background, -0.02)
+    const bg = this.add.graphics().setScrollFactor(0).setDepth(0)
+    bg.fillGradientStyle(bgTop, bgTop, t.colors.background, t.colors.background, 1, 1, 1, 1)
+    bg.fillRect(0, 0, W, H)
+    // Edge darkening — the same vignette trick the prototypes get from the
+    // background presets, inlined here because this scene owns its own fill.
+    bg.fillGradientStyle(0x000000, 0x000000, 0x000000, 0x000000, 0.3, 0, 0.3, 0)
+    bg.fillRect(0, 0, W * 0.3, H)
+    bg.fillGradientStyle(0x000000, 0x000000, 0x000000, 0x000000, 0, 0.3, 0, 0.3)
+    bg.fillRect(W * 0.7, 0, W * 0.3, H)
 
     // ── Fixed header ─────────────────────────────────────────────────────────
-    this.add.text(W / 2, 36, 'AI GAME LAB', {
-      fontSize: '28px', color: '#aaaacc', fontStyle: 'bold',
-    }).setOrigin(0.5).setScrollFactor(0).setDepth(100)
+    // Opaque band, then a short gradient tail. Without the opaque part the
+    // list scrolls straight through the title.
+    const headBand = this.add.graphics().setScrollFactor(0).setDepth(95)
+    headBand.fillStyle(bgTop, 1)
+    headBand.fillRect(0, 0, W, 76)
+    headBand.fillGradientStyle(bgTop, bgTop, bgTop, bgTop, 1, 1, 0, 0)
+    headBand.fillRect(0, 76, W, 26)
 
-    this.add.text(W / 2, 64, 'Select a prototype', {
-      fontSize: '13px', color: '#444466',
-    }).setOrigin(0.5).setScrollFactor(0).setDepth(100)
+    this.add.text(W / 2, 34, 'AI GAME LAB', this.p.text('subheading', t.colors.text))
+      .setOrigin(0.5).setScrollFactor(0).setDepth(100)
+
+    this.add.text(W / 2, 62, 'Select a prototype', this.p.text('caption', t.colors.muted))
+      .setOrigin(0.5).setScrollFactor(0).setDepth(100)
 
     // ── Scrollable cards ──────────────────────────────────────────────────────
     PROTOTYPES.forEach((proto, i) => {
       const cy = topPad + i * (cardH + cardGap) + cardH / 2
-      const hexColor = `#${proto.color.toString(16).padStart(6, '0')}`
 
-      const card = this.add.rectangle(W / 2, cy, cardW, cardH, 0x111122)
-        .setStrokeStyle(1, 0x222244)
-        .setInteractive({ useHandCursor: true })
+      // Both card states are baked once. Eleven live Graphics, each spending
+      // seven path fills on shadow + sheen + bevel, re-tessellate on the CPU
+      // every frame and cost this scene more than half its frame rate.
+      const bakePad = 24
+      const bakeCard = (hovered: boolean): Phaser.GameObjects.Image =>
+        bakeGraphics(this, cardW + bakePad * 2, cardH + bakePad * 2, (g, bw, bh) => {
+          drawShadow(g, bw / 2, bh / 2, cardW, cardH, { radius: t.radius.md }, t)
+          drawRoundedCard(g, bw / 2, bh / 2, cardW, cardH, {
+            fill: hovered ? mix(t.colors.surface, proto.color, 0.12) : t.colors.surface,
+            radius: t.radius.md,
+            stroke: hovered ? proto.color : t.colors.border,
+            strokeWidth: t.stroke.thin,
+            strokeAlpha: hovered ? 0.9 : 0.5,
+          }, t)
+          // Accent stripe, clipped to the card's left corners.
+          g.fillStyle(proto.color, 1)
+          g.fillRoundedRect(bw / 2 - cardW / 2, bh / 2 - cardH / 2, 5, cardH, {
+            tl: t.radius.md, tr: 0, bl: t.radius.md, br: 0,
+          })
+        })
 
-      this.add.rectangle(W / 2 - cardW / 2 + 3, cy, 4, cardH - 4, proto.color)
-        .setOrigin(0.5)
+      const idleImg  = bakeCard(false)
+      const hoverImg = bakeCard(true).setVisible(false)
+      const paint = (hovered: boolean): void => {
+        idleImg.setVisible(!hovered)
+        hoverImg.setVisible(hovered)
+      }
 
-      this.add.text(W / 2 - cardW / 2 + 24, cy - 8, proto.number, {
-        fontSize: '11px', color: hexColor, fontStyle: 'bold',
-      }).setOrigin(0.5)
+      const num = this.add.text(-cardW / 2 + 26, -9, proto.number,
+        this.p.text('caption', proto.color)).setOrigin(0, 0.5)
+      const name = this.add.text(-cardW / 2 + 68, -10, proto.name,
+        this.p.text('body', t.colors.text)).setOrigin(0, 0.5)
+      const desc = this.add.text(-cardW / 2 + 68, 14, proto.description,
+        this.p.text('caption', t.colors.muted)).setOrigin(0, 0.5)
+      const chev = this.add.text(cardW / 2 - 20, -2, '\u203a',
+        this.p.text('heading', t.colors.border)).setOrigin(0.5)
 
-      this.add.text(W / 2 - cardW / 2 + 52, cy - 9, proto.name, {
-        fontSize: '16px', color: '#ccccee', fontStyle: 'bold',
-      }).setOrigin(0, 0.5)
+      const card = this.add.container(W / 2, cy, [idleImg, hoverImg, num, name, desc, chev])
+      card.setSize(cardW, cardH)
+      card.setInteractive(
+        new Phaser.Geom.Rectangle(-cardW / 2, -cardH / 2, cardW, cardH),
+        Phaser.Geom.Rectangle.Contains,
+      )
+      const io = card.input
+      if (io) io.cursor = 'pointer'
 
-      this.add.text(W / 2 - cardW / 2 + 52, cy + 13, proto.description, {
-        fontSize: '11px', color: '#555577',
-      }).setOrigin(0, 0.5)
-
-      this.add.text(W / 2 + cardW / 2 - 16, cy, '›', {
-        fontSize: '20px', color: '#333355',
-      }).setOrigin(0.5)
-
-      card.on('pointerover', () => card.setFillStyle(0x1a1a33).setStrokeStyle(1, proto.color))
-      card.on('pointerout',  () => card.setFillStyle(0x111122).setStrokeStyle(1, 0x222244))
-      card.on('pointerup',   () => {
+      card.on('pointerover', () => {
+        paint(true)
+        chev.setColor(hex(proto.color))
+        this.tweens.add({
+          targets: card, x: W / 2 + 4,
+          duration: t.duration.fast, ease: t.ease.out,
+        })
+      })
+      card.on('pointerout', () => {
+        paint(false)
+        chev.setColor(hex(t.colors.border))
+        this.tweens.add({
+          targets: card, x: W / 2,
+          duration: t.duration.fast, ease: t.ease.out,
+        })
+      })
+      card.on('pointerdown', () => {
+        if (this._dragging) return
+        this.tweens.add({
+          targets: card, scaleX: 0.98, scaleY: 0.98,
+          duration: t.duration.micro, ease: t.ease.out,
+        })
+      })
+      card.on('pointerup', () => {
+        this.tweens.add({
+          targets: card, scaleX: 1, scaleY: 1,
+          duration: t.duration.fast, ease: t.ease.overshoot,
+        })
         if (this._dragging) return  // ignore tap-end after a scroll drag
         cam.fadeOut(200, 0, 0, 0)
         cam.once('camerafadeoutcomplete', () => this.scene.start(proto.key))
       })
+
+      // Staggered entrance, capped so the last card is not a second late.
+      card.setAlpha(0)
+      this.tweens.add({
+        targets: card, alpha: 1,
+        duration: t.duration.normal,
+        delay: Math.min(i * 35, 320),
+        ease: t.ease.out,
+      })
     })
 
-    // ── Top / bottom fade masks (fixed) ───────────────────────────────────────
-    const topMask = this.add.graphics().setScrollFactor(0).setDepth(90)
-    topMask.fillGradientStyle(0x0a0a14, 0x0a0a14, 0x0a0a14, 0x0a0a14, 1, 1, 0, 0)
-    topMask.fillRect(0, 74, W, 20)
-
-    const botMask = this.add.graphics().setScrollFactor(0).setDepth(90)
-    botMask.fillGradientStyle(0x0a0a14, 0x0a0a14, 0x0a0a14, 0x0a0a14, 0, 0, 1, 1)
-    botMask.fillRect(0, H - 48, W, 48)
+    // ── Bottom fade mask (fixed) ──────────────────────────────────────────────
+    const b = t.colors.background
+    const botMask = this.add.graphics().setScrollFactor(0).setDepth(95)
+    botMask.fillGradientStyle(b, b, b, b, 0, 0, 1, 1)
+    botMask.fillRect(0, H - 78, W, 48)
+    botMask.fillStyle(b, 1)
+    botMask.fillRect(0, H - 30, W, 30)
 
     // ── Fixed footer ──────────────────────────────────────────────────────────
-    const scrollHint = maxScroll > 0 ? 'Scroll / drag to see more  ·  ' : ''
-    this.add.text(W / 2, H - 14, `${scrollHint}ESC from any prototype returns here`, {
-      fontSize: '11px', color: '#222244',
-    }).setOrigin(0.5, 1).setScrollFactor(0).setDepth(100)
+    const scrollHint = maxScroll > 0 ? 'Scroll / drag to see more  \u00b7  ' : ''
+    this.add.text(W / 2, H - 12, `${scrollHint}ESC from any prototype returns here`,
+      this.p.text('caption', mix(t.colors.muted, t.colors.background, 0.45)))
+      .setOrigin(0.5, 1).setScrollFactor(0).setDepth(100)
 
     // ── Mouse wheel scroll ────────────────────────────────────────────────────
     this.input.on('wheel',
