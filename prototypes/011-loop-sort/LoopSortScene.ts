@@ -29,11 +29,22 @@ import type {
 
 // ── Tuning ────────────────────────────────────────────────────────────────────
 
-const INSERT_MS = 260
-const SHIFT_MS  = 160
-const CLEAR_MS  = 320
-const CHAIN_BEAT = 140
-const OBSTACLE_MS = 380
+// How long each tween actually runs.
+const INSERT_MS   = 2
+const SHIFT_MS    =10
+const CLEAR_MS    = 10
+const OBSTACLE_MS = 10
+
+// How far the timeline advances before the NEXT event fires. Deliberately
+// shorter than the durations above so animations overlap. Advancing by the
+// full duration made every event queue end-to-end, so one tap on a 3-cube
+// batch with a chain locked input for ~2s.
+const INSERT_STEP   = 2
+const SHIFT_STEP    = 2
+const CLEAR_STEP    = 1
+const OBSTACLE_STEP = 5
+const CHAIN_BEAT    = 5
+const TAIL_MS       = 4
 
 const CUBE_FILL: Record<CubeColor, number> = {
   red:    0xff5566,
@@ -780,14 +791,14 @@ export class LoopSortScene extends Phaser.Scene {
               if (v && p) this.moveCube(v, p, SHIFT_MS)
             }
           })
-          t += SHIFT_MS
+          t += SHIFT_STEP
           break
         }
 
         case 'insert': {
           const { cubeId, color, slot } = e
           this.schedule(token, t, () => this.animInsert(cubeId, color, slot))
-          t += INSERT_MS
+          t += INSERT_STEP
           i++
           break
         }
@@ -797,7 +808,7 @@ export class LoopSortScene extends Phaser.Scene {
           lastChain = e.chainIndex
           const ev = e
           this.schedule(token, t, () => this.animClear(ev))
-          t += CLEAR_MS
+          t += CLEAR_STEP
           i++
           break
         }
@@ -805,7 +816,7 @@ export class LoopSortScene extends Phaser.Scene {
         case 'obstacle': {
           const { obstacleId, became } = e
           this.schedule(token, t, () => this.animObstacle(obstacleId, became))
-          t += OBSTACLE_MS
+          t += OBSTACLE_STEP
           i++
           break
         }
@@ -813,21 +824,21 @@ export class LoopSortScene extends Phaser.Scene {
         case 'fail': {
           const reason = e.reason
           this.schedule(token, t, () => this.showFail(reason))
-          t += CLEAR_MS
+          t += CLEAR_STEP
           i++
           break
         }
 
         case 'complete': {
           this.schedule(token, t + CHAIN_BEAT, () => this.showComplete())
-          t += CLEAR_MS
+          t += CLEAR_STEP
           i++
           break
         }
       }
     }
 
-    this.schedule(token, t + 60, () => this.onTimelineEnd())
+    this.schedule(token, t + TAIL_MS, () => this.onTimelineEnd())
   }
 
   private animInsert(cubeId: string, color: CubeColor, slot: number): void {
