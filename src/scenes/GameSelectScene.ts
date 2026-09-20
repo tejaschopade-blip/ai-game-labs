@@ -87,8 +87,8 @@ const PROTOTYPES: ProtoEntry[] = [
   {
     key: 'LoopSortScene',
     number: '011',
-    name: 'Loop Sort DNA',
-    description: 'Choose a batch, watch it sort, keep the belt alive',
+    name: 'Loop Sort',
+    description: 'The belt never stops — time your batch so three colours meet',
     color: 0xffb454,
   },
 ]

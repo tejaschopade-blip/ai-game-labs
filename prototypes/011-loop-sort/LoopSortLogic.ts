@@ -1,14 +1,25 @@
-// Loop Sort DNA — pure logic. No Phaser. Deterministic: same level + same
-// batch order always produces the same state and the same event log.
+// Loop Sort DNA — pure logic. No Phaser, no tweens, no screen coordinates.
 //
 // BELT MODEL
-//   A fixed array of `capacity` cells. Cubes compact toward index 0, but three
-//   things act as hard dividers and split the belt into segments:
-//     - a cell covered by a CLOSED curtain (unusable)
-//     - a FROZEN (ice) cube, which never moves and blocks movement past it
-//     - a LOCKED barrier, which sits between two cells
-//   Cubes compact toward the low end of their own segment and never cross a
-//   divider. Runs are contiguous same-colour cubes within one segment.
+//   `cells` is a fixed ring of `capacity` slots. A cube sits in a cell and
+//   stays there: cubes never slide relative to the belt on their own. What
+//   moves is `rotation`, a continuous cell-offset that advances every frame and
+//   carries the entire ring past a fixed intake point.
+//
+//   Cell `c` is at loop fraction  ((rotation + c) / capacity) mod 1.
+//   The intake chute is at loop fraction INTAKE_T, permanently.
+//
+//   So the cell under the chute changes as the belt turns, and the only thing
+//   the player controls is *which cell that is when they tap*. Colour is the
+//   what; rotation is the where. Neither alone is a decision — together they
+//   are the entire mechanic.
+//
+// WHY CUBES NEVER COMPACT
+//   An earlier build packed cubes toward a fixed end after every action. That
+//   made gaps disappear on their own, which meant matches assembled themselves
+//   and the player's timing stopped mattering. Here a gap is a real, persistent
+//   object that travels around the loop with everything else — it is the space
+//   you aim at, and it is the resource you spend.
 
 import type {
   Batch,
@@ -16,220 +27,188 @@ import type {
   CubeColor,
   GameState,
   LoopSortLevel,
-  Obstacle,
-  ResolveEvent,
+  ReleaseEvent,
 } from './LoopSortTypes'
+import { effectiveCapacity, effectiveMatchSize, effectiveSpeed } from './LoopSortTuning'
 
-interface Segment { start: number; end: number }
-interface Run { color: CubeColor; start: number; end: number }
+/**
+ * Where the intake chute sits on the loop, as a fraction of the path starting
+ * at top-centre and running clockwise. 0.5 is bottom-centre — nearest the
+ * batch tray, so a released cube travels the shortest possible distance and
+ * the player's eye never has to leave the bottom of the screen.
+ *
+ * Shared with the scene so the drawn chute and the logical intake are the same
+ * point by construction rather than by two numbers agreeing.
+ */
+export const INTAKE_T = 0.5
 
-// ── Segments ──────────────────────────────────────────────────────────────────
+interface Run { color: CubeColor; cells: number[] }
 
-function isCurtained(state: GameState, i: number): boolean {
-  return state.obstacles.some(
-    o => o.kind === 'curtain' && !o.open && i >= o.from && i <= o.to,
-  )
+// ── Geometry of the ring ──────────────────────────────────────────────────────
+
+/** Loop fraction [0,1) of a given cell right now. */
+export function cellFraction(state: GameState, cell: number): number {
+  const cap = state.cells.length
+  const raw = (state.rotation + cell) / cap
+  return raw - Math.floor(raw)
 }
 
-function isDivider(state: GameState, i: number): boolean {
-  if (isCurtained(state, i)) return true
-  const c = state.cells[i]
-  return c !== null && c !== undefined && c.frozen
+/** The cell currently under the intake chute. */
+export function intakeCell(state: GameState): number {
+  const cap = state.cells.length
+  const raw = INTAKE_T * cap - state.rotation
+  return ((Math.round(raw) % cap) + cap) % cap
 }
 
-function barrierLockedAt(state: GameState, i: number): boolean {
-  return state.obstacles.some(o => o.kind === 'barrier' && o.locked && o.at === i)
+/** Advances the belt. The only thing that happens between player actions. */
+export function advance(state: GameState, dtSeconds: number): void {
+  if (state.phase !== 'RUNNING') return
+  const cap = state.cells.length
+  const speed = effectiveSpeed(state.level.speed)
+  state.rotation = (state.rotation + speed * dtSeconds) % cap
 }
 
-function segments(state: GameState): Segment[] {
-  const out: Segment[] = []
-  let cur: Segment | null = null
-  const push = (): void => { if (cur) { out.push(cur); cur = null } }
+// ── Occupancy ─────────────────────────────────────────────────────────────────
 
-  for (let i = 0; i < state.cells.length; i++) {
-    if (barrierLockedAt(state, i)) push()
-    if (isDivider(state, i)) { push(); continue }
-    if (cur === null) cur = { start: i, end: i }
-    else cur.end = i
-  }
-  push()
-  return out
+export function occupiedCount(state: GameState): number {
+  return state.cells.reduce<number>((n, c) => n + (c ? 1 : 0), 0)
 }
 
-// ── Compaction ────────────────────────────────────────────────────────────────
+export function freeCount(state: GameState): number {
+  return state.cells.length - occupiedCount(state)
+}
 
-/** Packs each segment's cubes toward its low end, emitting a shift per move. */
-function compact(state: GameState, events: ResolveEvent[]): void {
-  for (const seg of segments(state)) {
-    const picked: Array<{ cube: Cube; from: number }> = []
-    for (let i = seg.start; i <= seg.end; i++) {
-      const c = state.cells[i]
-      if (c) { picked.push({ cube: c, from: i }); state.cells[i] = null }
-    }
-    for (let k = 0; k < picked.length; k++) {
-      const to = seg.start + k
-      state.cells[to] = picked[k].cube
-      if (picked[k].from !== to) {
-        events.push({ kind: 'shift', cubeId: picked[k].cube.id, from: picked[k].from, to })
-      }
-    }
-  }
+export function matchSizeOf(state: GameState): number {
+  return effectiveMatchSize(state.level.matchSize)
+}
+
+/** A batch is releasable only if every one of its cubes has somewhere to go. */
+export function canRelease(state: GameState, batch: Batch): boolean {
+  return state.phase === 'RUNNING' && batch.cubes.length <= freeCount(state)
 }
 
 // ── Runs ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Maximal groups of touching same-colour cubes, scanned circularly.
+ *
+ * The scan starts at a colour boundary (or an empty cell) so a run that
+ * straddles index 0 is found whole rather than split into two short ones. If no
+ * boundary exists the ring is full and single-coloured, which is one run of
+ * everything.
+ */
 function findRuns(state: GameState): Run[] {
-  const runs: Run[] = []
-  for (const seg of segments(state)) {
-    let i = seg.start
-    while (i <= seg.end) {
-      const c = state.cells[i]
-      if (!c) { i++; continue }
-      let j = i
-      while (j + 1 <= seg.end) {
-        const n = state.cells[j + 1]
-        if (n && n.color === c.color) j++
-        else break
-      }
-      runs.push({ color: c.color, start: i, end: j })
-      i = j + 1
-    }
+  const cells = state.cells
+  const cap = cells.length
+
+  let start = -1
+  for (let i = 0; i < cap; i++) {
+    const c = cells[i]
+    const prev = cells[(i - 1 + cap) % cap]
+    if (c === null || prev === null || prev.color !== c.color) { start = i; break }
   }
+  if (start < 0) {
+    const first = cells[0]
+    if (!first) return []
+    return [{ color: first.color, cells: cells.map((_, i) => i) }]
+  }
+
+  const runs: Run[] = []
+  let cur: Run | null = null
+  for (let n = 0; n < cap; n++) {
+    const i = (start + n) % cap
+    const c = cells[i]
+    if (!c) { if (cur) { runs.push(cur); cur = null } continue }
+    if (cur && cur.color === c.color) cur.cells.push(i)
+    else { if (cur) runs.push(cur); cur = { color: c.color, cells: [i] } }
+  }
+  if (cur) runs.push(cur)
   return runs
 }
 
-function firstFreeIn(state: GameState, seg: Segment): number {
-  for (let i = seg.start; i <= seg.end; i++) if (!state.cells[i]) return i
-  return -1
+/** The run a given cell belongs to, or null. Used by the view for previews. */
+export function runLengthAt(state: GameState, cell: number): number {
+  const hit = findRuns(state).find(r => r.cells.includes(cell))
+  return hit ? hit.cells.length : 0
 }
 
-/** First free cell at or after `from` within `seg`. -1 if the tail is full. */
-function firstFreeFrom(state: GameState, seg: Segment, from: number): number {
-  for (let i = Math.max(from, seg.start); i <= seg.end; i++) {
-    if (!state.cells[i]) return i
-  }
-  return -1
-}
+// ── Insertion ─────────────────────────────────────────────────────────────────
 
-// ── Routing ───────────────────────────────────────────────────────────────────
-//
-// Place one incoming cube of colour C:
-//   1. Among all runs of C, take the LONGEST; ties break to the LOWEST start.
-//   2. Insert immediately after that run, shifting the rest of the segment up.
-//   3. If C has no run (or its segment is full), append at the first free cell,
-//      scanning segments from index 0.
-//   4. If no segment has a free cell, the placement fails — that is the loss.
+/**
+ * Drops one cube into `cell`. If the cell is taken, the machine shoves: the
+ * cube there, and every cube touching it in the travel direction, moves one
+ * cell along into the first gap ahead. Returns false only if the whole ring is
+ * full, which `canRelease` prevents.
+ */
+function insertAt(
+  state: GameState, cell: number, color: CubeColor, events: ReleaseEvent[], order: number,
+): boolean {
+  const cells = state.cells
+  const cap = cells.length
 
-function insertCube(state: GameState, color: CubeColor, events: ResolveEvent[]): boolean {
-  const segs = segments(state)
-
-  let best: Run | null = null
-  for (const r of findRuns(state)) {
-    if (r.color !== color) continue
-    if (best === null) { best = r; continue }
-    const len = r.end - r.start + 1
-    const bestLen = best.end - best.start + 1
-    if (len > bestLen || (len === bestLen && r.start < best.start)) best = r
-  }
-
-  // `free` must be at or after `target`, otherwise shifting would overwrite a
-  // cube sitting below the insertion point on a not-yet-compacted belt.
-  let target = -1
-  let free = -1
-  if (best !== null) {
-    const chosen = best
-    const seg = segs.find(s => chosen.start >= s.start && chosen.end <= s.end)
-    if (seg) {
-      const f = firstFreeFrom(state, seg, chosen.end + 1)
-      if (f >= 0) { target = chosen.end + 1; free = f }
+  if (cells[cell] !== null) {
+    let gap = -1
+    for (let j = 1; j < cap; j++) {
+      if (cells[(cell + j) % cap] === null) { gap = j; break }
+    }
+    if (gap < 0) return false
+    for (let k = gap; k >= 1; k--) {
+      const to = (cell + k) % cap
+      const from = (cell + k - 1) % cap
+      const moving = cells[from]
+      if (!moving) continue
+      cells[to] = moving
+      cells[from] = null
+      events.push({ kind: 'shove', cubeId: moving.id, from, to })
     }
   }
-  if (target < 0) {
-    for (const s of segs) {
-      const f = firstFreeIn(state, s)
-      if (f >= 0) { target = f; free = f; break }
-    }
-  }
-  if (target < 0) {
-    events.push({ kind: 'fail', reason: 'full' })
-    return false
-  }
 
-  for (let i = free - 1; i >= target; i--) {
-    const c = state.cells[i]
-    if (!c) continue
-    state.cells[i + 1] = c
-    state.cells[i] = null
-    events.push({ kind: 'shift', cubeId: c.id, from: i, to: i + 1 })
-  }
-
-  const cube: Cube = { id: `c${state.nextCubeId++}`, color, frozen: false }
-  state.cells[target] = cube
-  events.push({ kind: 'insert', cubeId: cube.id, color, slot: target })
+  const cube: Cube = { id: `c${state.nextCubeId++}`, color }
+  cells[cell] = cube
+  events.push({ kind: 'land', cubeId: cube.id, color, cell, order })
   return true
 }
 
-// ── Matching and chains ───────────────────────────────────────────────────────
+// ── Matching ──────────────────────────────────────────────────────────────────
 
-/** Clears runs >= matchSize repeatedly until stable. Returns the next chain index. */
-function resolveMatches(state: GameState, events: ResolveEvent[], chainFrom: number): number {
-  let chainIndex = chainFrom
+/**
+ * Clears every run at or over the match size, longest first so a five-in-a-row
+ * pops as one satisfying group rather than as a three plus leftovers.
+ *
+ * Runs again after each clear, but clearing never joins two groups (the cubes
+ * do not move), so this settles immediately. It loops only to catch a batch
+ * that completed two separate matches at once.
+ */
+function resolveMatches(state: GameState, events: ReleaseEvent[]): void {
+  const need = matchSizeOf(state)
+  let order = 0
   for (;;) {
-    compact(state, events)
-    const hit = findRuns(state).find(r => r.end - r.start + 1 >= state.level.matchSize)
-    if (!hit) return chainIndex
+    const hits = findRuns(state)
+      .filter(r => r.cells.length >= need)
+      .sort((a, b) => b.cells.length - a.cells.length)
+    const hit = hits[0]
+    if (!hit) return
 
     const cubeIds: string[] = []
-    const slots: number[] = []
-    for (let i = hit.start; i <= hit.end; i++) {
+    for (const i of hit.cells) {
       const c = state.cells[i]
       if (!c) continue
       cubeIds.push(c.id)
-      slots.push(i)
       state.cells[i] = null
     }
     state.clearedByColor[hit.color] += cubeIds.length
-    state.totalClears += 1
-    events.push({ kind: 'clear', cubeIds, color: hit.color, slots, chainIndex })
-    chainIndex++
+    state.totalCleared += cubeIds.length
+    state.matches += 1
+    events.push({
+      kind: 'clear',
+      cubeIds,
+      color: hit.color,
+      cells: hit.cells,
+      size: cubeIds.length,
+      order,
+    })
+    order++
   }
-}
-
-// ── Obstacles ─────────────────────────────────────────────────────────────────
-
-/** Returns true if the board changed in a way that can produce new matches. */
-function resolveObstacles(state: GameState, events: ResolveEvent[]): boolean {
-  let changed = false
-  for (const o of state.obstacles) {
-    if (o.kind === 'curtain') {
-      if (!o.open && state.clearedByColor[o.requiredColor] >= o.requiredCount) {
-        o.open = true
-        events.push({ kind: 'obstacle', obstacleId: o.id, became: 'open' })
-        changed = true
-      }
-    } else if (o.kind === 'ice') {
-      if (!o.thawed && state.clearedByColor[o.requiredColor] >= o.requiredCount) {
-        o.thawed = true
-        const c = state.cells[o.slot]
-        if (c) c.frozen = false
-        events.push({ kind: 'obstacle', obstacleId: o.id, became: 'broken' })
-        changed = true
-      }
-    } else if (o.kind === 'barrier') {
-      if (o.locked && state.clearedByColor[o.requiredColor] >= o.requiredCount) {
-        o.locked = false
-        events.push({ kind: 'obstacle', obstacleId: o.id, became: 'unlocked' })
-        changed = true
-      }
-    } else {
-      // hidden — information only, never changes the logical board
-      if (!o.revealed && state.totalClears >= o.revealAfterClears) {
-        o.revealed = true
-        events.push({ kind: 'obstacle', obstacleId: o.id, became: 'revealed' })
-      }
-    }
-  }
-  return changed
 }
 
 // ── State construction ────────────────────────────────────────────────────────
@@ -238,54 +217,40 @@ function makeBatch(cubes: CubeColor[], index: number): Batch {
   return { id: `b${index}`, cubes: [...cubes] }
 }
 
-function cloneState(s: GameState): GameState {
-  return {
-    level: s.level,
-    cells: s.cells.map(c => (c ? { ...c } : null)),
-    obstacles: s.obstacles.map(o => ({ ...o }) as Obstacle),
-    offered: s.offered.map(b => ({ id: b.id, cubes: [...b.cubes] })),
-    queueIndex: s.queueIndex,
-    clearedByColor: { ...s.clearedByColor },
-    totalClears: s.totalClears,
-    picks: s.picks,
-    phase: s.phase,
-    nextCubeId: s.nextCubeId,
+function refillOffer(state: GameState): void {
+  const level = state.level
+  while (state.offered.length < level.offerCount && state.queueIndex < level.batchQueue.length) {
+    state.offered.push(makeBatch(level.batchQueue[state.queueIndex], state.queueIndex))
+    state.queueIndex++
   }
 }
 
 export function createGame(level: LoopSortLevel): GameState {
-  const cells: (Cube | null)[] = new Array(level.capacity).fill(null)
+  const cap = effectiveCapacity(level.capacity)
+  const cells: (Cube | null)[] = new Array(cap).fill(null)
   let nextCubeId = 0
 
-  const iceSlots = new Set(
-    level.obstacles.filter(o => o.kind === 'ice').map(o => (o as { slot: number }).slot),
-  )
-
-  for (let i = 0; i < Math.min(level.initialBelt.length, level.capacity); i++) {
+  for (let i = 0; i < Math.min(level.initialBelt.length, cap); i++) {
     const color = level.initialBelt[i]
     if (!color) continue
-    cells[i] = { id: `c${nextCubeId++}`, color, frozen: iceSlots.has(i) }
+    cells[i] = { id: `c${nextCubeId++}`, color }
   }
 
-  const offered: Batch[] = []
-  let queueIndex = 0
-  while (offered.length < level.offerCount && queueIndex < level.batchQueue.length) {
-    offered.push(makeBatch(level.batchQueue[queueIndex], queueIndex))
-    queueIndex++
-  }
-
-  return {
+  const state: GameState = {
     level,
     cells,
-    obstacles: level.obstacles.map(o => ({ ...o }) as Obstacle),
-    offered,
-    queueIndex,
+    rotation: 0,
+    offered: [],
+    queueIndex: 0,
     clearedByColor: { red: 0, blue: 0, green: 0, yellow: 0 },
-    totalClears: 0,
+    totalCleared: 0,
+    matches: 0,
     picks: 0,
-    phase: 'WAITING_FOR_INPUT',
+    phase: 'RUNNING',
     nextCubeId,
   }
+  refillOffer(state)
+  return state
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -294,88 +259,78 @@ export function isComplete(state: GameState): boolean {
   return state.level.goal.every(g => state.clearedByColor[g.color] >= g.count)
 }
 
-export function isFailed(state: GameState): boolean {
-  return state.phase === 'LEVEL_FAILED'
+/** Goal progress 0..1 across every colour, for the HUD ring. */
+export function goalProgress(state: GameState): number {
+  const goals = state.level.goal
+  if (goals.length === 0) return 0
+  let got = 0
+  let want = 0
+  for (const g of goals) {
+    got += Math.min(state.clearedByColor[g.color], g.count)
+    want += g.count
+  }
+  return want > 0 ? got / want : 0
 }
 
 /**
- * Sends one batch. Cubes enter one at a time in array order, each fully
- * resolving (matches, chains, obstacles) before the next — that ordering is
- * what makes a batch's outcome predictable, and therefore a real decision.
+ * Sends one batch onto the belt, landing its cubes in consecutive cells
+ * starting at whichever cell is under the chute *at this instant*.
+ *
+ * The whole batch is placed before matches are checked, so a batch reads as one
+ * object with one outcome — which is what makes "if I send this now, those two
+ * will connect" a prediction the player can actually make.
  */
-export function selectBatch(
-  state: GameState,
-  batchId: string,
-): { next: GameState; events: ResolveEvent[] } {
-  const events: ResolveEvent[] = []
-  const next = cloneState(state)
+export function releaseBatch(state: GameState, batchId: string): ReleaseEvent[] {
+  const events: ReleaseEvent[] = []
+  if (state.phase !== 'RUNNING') return events
 
-  if (next.phase === 'LEVEL_COMPLETE' || next.phase === 'LEVEL_FAILED') {
-    return { next, events }
+  const idx = state.offered.findIndex(b => b.id === batchId)
+  if (idx < 0) return events
+  const batch = state.offered[idx]
+  if (!canRelease(state, batch)) return events
+
+  state.offered.splice(idx, 1)
+  refillOffer(state)
+  state.picks++
+
+  const cap = state.cells.length
+  const start = intakeCell(state)
+  for (let j = 0; j < batch.cubes.length; j++) {
+    if (!insertAt(state, (start + j) % cap, batch.cubes[j], events, j)) break
   }
-  const idx = next.offered.findIndex(b => b.id === batchId)
-  if (idx < 0) return { next, events }
 
-  const batch = next.offered[idx]
-  next.offered.splice(idx, 1)
-  if (next.queueIndex < next.level.batchQueue.length) {
-    next.offered.push(makeBatch(next.level.batchQueue[next.queueIndex], next.queueIndex))
-    next.queueIndex++
-  }
-  next.picks++
+  resolveMatches(state, events)
+  evaluate(state, events)
+  return events
+}
 
-  let chain = 0
-  for (const color of batch.cubes) {
-    if (!insertCube(next, color, events)) {
-      next.phase = 'LEVEL_FAILED'
-      return { next, events }
-    }
-    for (;;) {
-      chain = resolveMatches(next, events, chain)
-      if (!resolveObstacles(next, events)) break
-    }
-  }
-  compact(next, events)
+/**
+ * Decides whether the level is over. Failure is always one of two readable
+ * sentences: the belt has no room for anything you were offered, or the offer
+ * ran dry before the goal was met.
+ */
+export function evaluate(state: GameState, events: ReleaseEvent[]): void {
+  if (state.phase !== 'RUNNING') return
 
-  if (isComplete(next)) {
-    next.phase = 'LEVEL_COMPLETE'
+  if (isComplete(state)) {
+    state.phase = 'LEVEL_COMPLETE'
     events.push({ kind: 'complete' })
-  } else if (next.offered.length === 0) {
-    next.phase = 'LEVEL_FAILED'
-    events.push({ kind: 'fail', reason: 'outOfBatches' })
-  } else {
-    next.phase = 'WAITING_FOR_INPUT'
+    return
   }
-
-  return { next, events }
+  if (state.offered.length === 0) {
+    state.phase = 'LEVEL_FAILED'
+    state.failReason = 'outOfBatches'
+    events.push({ kind: 'fail', reason: 'outOfBatches' })
+    return
+  }
+  if (!state.offered.some(b => canRelease(state, b))) {
+    state.phase = 'LEVEL_FAILED'
+    state.failReason = 'full'
+    events.push({ kind: 'fail', reason: 'full' })
+  }
 }
 
-/** Occupied cell count — the "how full am I" readout for the HUD. */
-export function occupiedCount(state: GameState): number {
-  return state.cells.reduce<number>((n, c) => n + (c ? 1 : 0), 0)
-}
-
-/** Usable cell count, i.e. capacity minus cells under a closed curtain. */
-export function usableCapacity(state: GameState): number {
-  let n = 0
-  for (let i = 0; i < state.cells.length; i++) if (!isCurtained(state, i)) n++
-  return n
-}
-
-/** Stable serialisation — used for search memoisation and determinism checks. */
-export function stateKey(state: GameState): string {
-  const belt = state.cells
-    .map(c => (c ? `${c.color[0]}${c.frozen ? '*' : ''}` : '.'))
-    .join('')
-  const obs = state.obstacles
-    .map(o => {
-      if (o.kind === 'curtain') return `c${o.id}:${o.open ? 1 : 0}`
-      if (o.kind === 'ice') return `i${o.id}:${o.thawed ? 1 : 0}`
-      if (o.kind === 'barrier') return `b${o.id}:${o.locked ? 1 : 0}`
-      return `h${o.id}:${o.revealed ? 1 : 0}`
-    })
-    .join(',')
-  const offer = state.offered.map(b => b.cubes.join('')).join('|')
-  const cleared = `${state.clearedByColor.red},${state.clearedByColor.blue},${state.clearedByColor.green},${state.clearedByColor.yellow}`
-  return `${belt}#${obs}#${offer}#${state.queueIndex}#${cleared}#${state.phase}`
+/** Compact belt readout for the debug overlay. `.` is an empty cell. */
+export function describeBelt(state: GameState): string {
+  return state.cells.map(c => (c ? c.color[0] : '.')).join('')
 }

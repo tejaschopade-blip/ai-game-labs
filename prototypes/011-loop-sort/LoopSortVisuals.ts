@@ -12,9 +12,7 @@
 import Phaser from 'phaser'
 import { drawShadow, drawRoundedCard, type Theme } from '../../src/presentation'
 import type { CubeColor } from './LoopSortTypes'
-import {
-  CUBE_SKIN, CUBE_EMBLEM, MACHINE, OBSTACLE, type CubeEmblem,
-} from './LoopSortTheme'
+import { CUBE_SKIN, CUBE_EMBLEM, MACHINE, type CubeEmblem } from './LoopSortTheme'
 
 export interface Point { x: number; y: number }
 
@@ -104,40 +102,6 @@ export function drawToyCube(
   g.strokeRoundedRect(x, y, s, s, r)
 }
 
-/**
- * Frost shell over a frozen cube. `stage` 0..2 adds cracks rather than changing
- * the ice itself, so the player reads progress toward the break.
- */
-export function drawIceShell(
-  g: G, cx: number, cy: number, size: number, stage: 0 | 1 | 2,
-): void {
-  const s = size * 1.06
-  const r = s * CUBE_RADIUS
-  const x = cx - s / 2
-  const y = cy - s / 2
-
-  g.fillStyle(OBSTACLE.ice, 0.52)
-  g.fillRoundedRect(x, y, s, s, r)
-  g.fillStyle(0xffffff, 0.3)
-  g.fillRoundedRect(x + s * 0.08, y + s * 0.08, s * 0.84, s * 0.3, r * 0.6)
-  g.lineStyle(Math.max(3, s * 0.06), OBSTACLE.iceRim, 0.95)
-  g.strokeRoundedRect(x, y, s, s, r)
-
-  // Cracks accumulate; each stage keeps the previous ones.
-  const crack = (pts: Array<[number, number]>): void => {
-    g.lineStyle(Math.max(2, s * 0.035), 0xffffff, 0.9)
-    g.beginPath()
-    g.moveTo(cx + pts[0][0] * s, cy + pts[0][1] * s)
-    for (let i = 1; i < pts.length; i++) g.lineTo(cx + pts[i][0] * s, cy + pts[i][1] * s)
-    g.strokePath()
-  }
-  if (stage >= 1) crack([[-0.3, -0.34], [-0.08, -0.06], [-0.16, 0.16]])
-  if (stage >= 2) {
-    crack([[0.32, -0.28], [0.06, 0.0], [0.22, 0.3]])
-    crack([[-0.08, -0.06], [0.24, 0.1]])
-  }
-}
-
 // ── Belt ──────────────────────────────────────────────────────────────────────
 
 /** Strokes a closed path, offset by (dx, dy). */
@@ -184,9 +148,9 @@ export function walkPath(
  * The machine itself, in one pass:
  *
  *   ground shadow → outer platform → platform top-light → recessed channel
- *   → channel inner shade → tread marks
+ *   → channel inner shade
  *
- * Six strokes along a ~400 point path. Baked once; never drawn per frame.
+ * Five strokes along a ~400 point path. Baked once; never drawn per frame.
  */
 export function drawConveyor(
   g: G, path: Point[], dx: number, dy: number, cubeSize: number,
@@ -208,36 +172,193 @@ export function drawConveyor(
   strokePath(g, path, dx, dy, channel + 6, MACHINE.channelDark, 1)
   strokePath(g, path, dx, dy + 3, channel, MACHINE.channel, 1)
 
-  // Tread marks across the lane.
-  const half = channel / 2 - 4
-  g.lineStyle(5, MACHINE.tread, 0.16)
-  walkPath(path, 46, (p, nx, ny) => {
-    g.lineBetween(
-      p.x + dx - nx * half, p.y + dy - ny * half,
-      p.x + dx + nx * half, p.y + dy + ny * half,
-    )
-  })
+  // No tread marks are painted here on purpose: they are separate objects that
+  // travel with the belt (see LoopSortScene.buildTreads). A moving machine
+  // cannot have its motion cue baked into a static texture.
 }
 
-/** Empty socket: a moulded well in the belt, lit from below. */
-export function drawSlotWell(
-  g: G, cx: number, cy: number, size: number, blocked: boolean,
-): void {
+/**
+ * Empty socket: a moulded well in the belt, lit from below.
+ *
+ * Wells are *belt* features, so the scene draws one per cell and moves them
+ * with the rotation rather than baking them into the track. An empty cell you
+ * can watch travelling around the loop is most of what tells a new player that
+ * the machine is running.
+ */
+export function drawSlotWell(g: G, cx: number, cy: number, size: number): void {
   const s = size
   const r = s * CUBE_RADIUS
   const x = cx - s / 2
   const y = cy - s / 2
 
-  g.fillStyle(blocked ? MACHINE.channelDark : MACHINE.slot, blocked ? 1 : 0.85)
+  g.fillStyle(MACHINE.slot, 0.85)
   g.fillRoundedRect(x, y, s, s, r)
   // Inverted lighting: dark top, lit bottom. The exact opposite of a cube, so
   // an empty slot can never be mistaken for a piece.
-  g.fillStyle(0x000000, blocked ? 0.2 : 0.1)
+  g.fillStyle(0x000000, 0.1)
   g.fillRoundedRect(x, y, s, s * 0.34, { tl: r, tr: r, bl: 0, br: 0 })
-  g.fillStyle(0xffffff, blocked ? 0.04 : 0.12)
+  g.fillStyle(0xffffff, 0.12)
   g.fillRoundedRect(x, y + s - s * 0.2, s, s * 0.2, { tl: 0, tr: 0, bl: r, br: r })
-  g.lineStyle(3, blocked ? MACHINE.channelDark : MACHINE.slotRim, blocked ? 0.5 : 0.55)
+  g.lineStyle(3, MACHINE.slotRim, 0.55)
   g.strokeRoundedRect(x, y, s, s, r)
+}
+
+/** One tread bar across the lane, drawn horizontally and rotated into place. */
+export function drawTread(g: G, cx: number, cy: number, length: number): void {
+  g.fillStyle(MACHINE.tread, 0.17)
+  g.fillRoundedRect(cx - 3, cy - length / 2, 6, length, 3)
+}
+
+/**
+ * The intake chute: a funnel bolted to the outside of the belt, mouth facing
+ * the tray. Fixed in screen space — it is the one thing that does not move,
+ * which is exactly why *when* you tap decides *where* a cube lands.
+ */
+export function drawChute(g: G, cx: number, cy: number, w: number, h: number): void {
+  const topW = w
+  const botW = w * 1.42
+
+  g.fillStyle(0x6b5a42, 0.1)
+  g.fillTriangle(cx - botW / 2, cy + h / 2 + 8, cx + botW / 2, cy + h / 2 + 8, cx, cy - h / 2 + 8)
+
+  g.fillStyle(MACHINE.casingDark, 1)
+  g.fillPoints([
+    new Phaser.Geom.Point(cx - topW / 2, cy - h / 2),
+    new Phaser.Geom.Point(cx + topW / 2, cy - h / 2),
+    new Phaser.Geom.Point(cx + botW / 2, cy + h / 2),
+    new Phaser.Geom.Point(cx - botW / 2, cy + h / 2),
+  ], true)
+  g.fillStyle(MACHINE.casing, 1)
+  g.fillPoints([
+    new Phaser.Geom.Point(cx - topW / 2 + 7, cy - h / 2),
+    new Phaser.Geom.Point(cx + topW / 2 - 7, cy - h / 2),
+    new Phaser.Geom.Point(cx + botW / 2 - 9, cy + h / 2 - 6),
+    new Phaser.Geom.Point(cx - botW / 2 + 9, cy + h / 2 - 6),
+  ], true)
+
+  // Throat: the dark gap a cube actually comes out of.
+  g.fillStyle(MACHINE.channelDark, 1)
+  g.fillRoundedRect(cx - topW / 2 + 16, cy - h / 2 - 4, topW - 32, 18, 8)
+
+  // Hazard stripes on the lip — the one loud marking on the machine.
+  g.fillStyle(MACHINE.accent, 0.85)
+  for (let i = -2; i <= 2; i++) {
+    g.fillRoundedRect(cx + i * 26 - 7, cy + h / 2 - 20, 14, 13, 4)
+  }
+}
+
+/**
+ * The landing marker: a bright ring around the cell that is under the chute
+ * right now. It snaps from cell to cell as the belt turns, which is the single
+ * most important readout in the game — it is the answer to "where will this
+ * batch go if I tap NOW".
+ */
+export function drawTargetRing(g: G, cx: number, cy: number, size: number, color: number): void {
+  const s = size * 1.2
+  const r = s * CUBE_RADIUS
+  g.lineStyle(6, color, 0.95)
+  g.strokeRoundedRect(cx - s / 2, cy - s / 2, s, s, r)
+  // Corner ticks — reads as a targeting bracket rather than a selection box.
+  const tick = s * 0.2
+  g.lineStyle(9, color, 1)
+  const corners: Array<[number, number, number, number]> = [
+    [-1, -1, 1, 0], [-1, -1, 0, 1], [1, -1, -1, 0], [1, -1, 0, 1],
+    [-1, 1, 1, 0], [-1, 1, 0, -1], [1, 1, -1, 0], [1, 1, 0, -1],
+  ]
+  for (const [sx, sy, dx, dy] of corners) {
+    const x = cx + (sx * s) / 2
+    const y = cy + (sy * s) / 2
+    g.lineBetween(x, y, x + dx * tick, y + dy * tick)
+  }
+}
+
+// ── Loop track ────────────────────────────────────────────────────────────────
+
+export interface TrackSample { x: number; y: number; angle: number }
+
+/**
+ * A closed path that can be sampled at any fraction of its length.
+ *
+ * This is what makes the belt continuous rather than stepped: a cell's position
+ * is `at(fraction)` of a real arc-length parameterisation, so a cube crossing a
+ * corner keeps a constant speed instead of accelerating through the arc.
+ */
+export class LoopTrack {
+  readonly path: Point[]
+  private cum: number[] = [0]
+  readonly length: number
+
+  constructor(path: Point[]) {
+    this.path = path
+    for (let i = 1; i < path.length; i++) {
+      this.cum.push(this.cum[i - 1] + Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y))
+    }
+    this.length = this.cum[this.cum.length - 1]
+  }
+
+  /** `t` is a loop fraction; values outside [0,1) wrap. */
+  at(t: number): TrackSample {
+    const f = t - Math.floor(t)
+    const d = f * this.length
+
+    let lo = 1
+    let hi = this.cum.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (this.cum[mid] < d) lo = mid + 1
+      else hi = mid
+    }
+    const a = this.path[lo - 1]
+    const b = this.path[lo]
+    const seg = this.cum[lo] - this.cum[lo - 1]
+    const k = seg > 0 ? (d - this.cum[lo - 1]) / seg : 0
+    return {
+      x: a.x + (b.x - a.x) * k,
+      y: a.y + (b.y - a.y) * k,
+      angle: Math.atan2(b.y - a.y, b.x - a.x),
+    }
+  }
+}
+
+/**
+ * Dense rounded-rectangle path, starting at top-centre and running clockwise.
+ * Sampled finely enough that LoopTrack's linear interpolation is invisible.
+ */
+export function buildLoopTrack(
+  cx: number, cy: number, w: number, h: number, r: number,
+): LoopTrack {
+  const hw = w / 2
+  const hh = h / 2
+  const rad = Math.min(r, hw, hh)
+  const path: Point[] = []
+
+  const line = (x1: number, y1: number, x2: number, y2: number): void => {
+    const steps = 16
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps
+      path.push({ x: x1 + (x2 - x1) * t, y: y1 + (y2 - y1) * t })
+    }
+  }
+  const arc = (ax: number, ay: number, a0: number, a1: number): void => {
+    const steps = 20
+    for (let i = 0; i <= steps; i++) {
+      const a = a0 + (a1 - a0) * (i / steps)
+      path.push({ x: ax + Math.cos(a) * rad, y: ay + Math.sin(a) * rad })
+    }
+  }
+
+  const HALF_PI = Math.PI / 2
+  line(cx, cy - hh, cx + hw - rad, cy - hh)
+  arc(cx + hw - rad, cy - hh + rad, -HALF_PI, 0)
+  line(cx + hw, cy - hh + rad, cx + hw, cy + hh - rad)
+  arc(cx + hw - rad, cy + hh - rad, 0, HALF_PI)
+  line(cx + hw - rad, cy + hh, cx - hw + rad, cy + hh)
+  arc(cx - hw + rad, cy + hh - rad, HALF_PI, Math.PI)
+  line(cx - hw, cy + hh - rad, cx - hw, cy - hh + rad)
+  arc(cx - hw + rad, cy - hh + rad, Math.PI, Math.PI * 1.5)
+  line(cx - hw + rad, cy - hh, cx, cy - hh)
+
+  return new LoopTrack(path)
 }
 
 /** Chevron pointing along travel — the flow indicator on the belt. */

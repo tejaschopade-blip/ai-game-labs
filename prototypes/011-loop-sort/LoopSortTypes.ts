@@ -1,17 +1,21 @@
 // Loop Sort DNA — pure types. No Phaser, no runtime dependencies.
-// These files must be runnable under plain node so levels can be verified headlessly.
+//
+// THE MODEL, IN ONE PARAGRAPH
+//   The belt is a ring of `capacity` fixed cells that rotates continuously.
+//   Cubes sit in cells and travel with them; they never move relative to the
+//   belt on their own. One fixed point in *screen* space is the intake chute.
+//   As the ring turns, a different cell passes under the chute every moment —
+//   so WHEN you release a batch decides WHERE on the belt it lands. That is the
+//   whole game: the belt supplies the timing, the player supplies the colour.
 
 export type CubeColor = 'red' | 'blue' | 'green' | 'yellow'
 
 export const ALL_COLORS: readonly CubeColor[] = ['red', 'blue', 'green', 'yellow']
 
-export const DEFAULT_MATCH_SIZE = 3
-
-/** A cube on the belt. `frozen` cubes are ice: inert, never match, never move. */
+/** A cube occupying one belt cell. `cell` is an index into BeltState.cells. */
 export interface Cube {
   id: string
   color: CubeColor
-  frozen: boolean
 }
 
 export interface Batch {
@@ -19,111 +23,63 @@ export interface Batch {
   cubes: CubeColor[]
 }
 
-// ── Obstacles ─────────────────────────────────────────────────────────────────
-// Four kinds, one shared `id`. No plugin system, no effect interpreter.
-
-/** Covers slots [from..to]. While closed those cells cannot hold cubes. */
-export interface CurtainObstacle {
-  kind: 'curtain'
-  id: string
-  from: number
-  to: number
-  requiredColor: CubeColor
-  requiredCount: number
-  open: boolean
-}
-
-/** Freezes the cube that starts at `slot`. Inert until thawed. */
-export interface IceObstacle {
-  kind: 'ice'
-  id: string
-  slot: number
-  requiredColor: CubeColor
-  requiredCount: number
-  thawed: boolean
-}
-
-/** A wall between slot `at-1` and `at`. While locked, nothing crosses it. */
-export interface BarrierObstacle {
-  kind: 'barrier'
-  id: string
-  at: number
-  requiredColor: CubeColor
-  requiredCount: number
-  locked: boolean
-}
-
-/** Purely informational: logic always knows the truth, the view hides it. */
-export interface HiddenObstacle {
-  kind: 'hidden'
-  id: string
-  from: number
-  to: number
-  revealAfterClears: number
-  revealed: boolean
-}
-
-export type Obstacle =
-  | CurtainObstacle
-  | IceObstacle
-  | BarrierObstacle
-  | HiddenObstacle
-
-// ── Level ─────────────────────────────────────────────────────────────────────
-
 export interface LevelGoal { color: CubeColor; count: number }
 
 export interface LoopSortLevel {
   id: number
   name: string
   teaches: string
-  matchSize: number
+  /** Cells around the ring. This *is* the capacity — one cube per cell. */
   capacity: number
-  /** How many batches are visible and choosable at once. */
+  matchSize: number
+  /** Belt travel in cells per second. Slow enough to read, fast enough to feel alive. */
+  speed: number
+  /** How many batches are offered at once. */
   offerCount: number
-  /** Occupied prefix of the belt at level start; padded with null to `capacity`. */
+  /** Cube colours at cell 0..n at level start; `null` leaves the cell empty. */
   initialBelt: (CubeColor | null)[]
   /** Consumed in order to refill the offer. Deterministic — never shuffled. */
   batchQueue: CubeColor[][]
-  obstacles: Obstacle[]
   goal: LevelGoal[]
 }
 
-// ── Runtime state ─────────────────────────────────────────────────────────────
+export type Phase = 'RUNNING' | 'LEVEL_COMPLETE' | 'LEVEL_FAILED'
 
-export type Phase =
-  | 'LEVEL_READY'
-  | 'WAITING_FOR_INPUT'
-  | 'RELEASING'
-  | 'SORTING'
-  | 'RESOLVING_MATCHES'
-  | 'RESOLVING_OBSTACLES'
-  | 'CHECK_LEVEL'
-  | 'LEVEL_COMPLETE'
-  | 'LEVEL_FAILED'
+export type FailReason = 'full' | 'outOfBatches'
 
-/** Plain data only — never holds a Phaser reference. */
+/**
+ * Plain data only — never holds a Phaser reference.
+ *
+ * `rotation` is continuous and is the only thing that changes between player
+ * actions. Everything else changes exclusively inside `releaseBatch`.
+ */
 export interface GameState {
   level: LoopSortLevel
+  /** Fixed ring of cells. Index is a belt position, not a screen position. */
   cells: (Cube | null)[]
-  obstacles: Obstacle[]
+  /** Continuous belt travel in cells, wrapped to [0, capacity). */
+  rotation: number
   offered: Batch[]
   queueIndex: number
   clearedByColor: Record<CubeColor, number>
-  totalClears: number
+  totalCleared: number
+  matches: number
   picks: number
   phase: Phase
+  failReason?: FailReason
   nextCubeId: number
 }
 
 // ── Event log ─────────────────────────────────────────────────────────────────
-// The presentation layer animates this list in order. It is the only contract
-// between logic and view.
+// One release produces one ordered list. The scene animates it; it is the only
+// contract between logic and view.
 
-export type ResolveEvent =
-  | { kind: 'insert'; cubeId: string; color: CubeColor; slot: number }
-  | { kind: 'shift'; cubeId: string; from: number; to: number }
-  | { kind: 'clear'; cubeIds: string[]; color: CubeColor; slots: number[]; chainIndex: number }
-  | { kind: 'obstacle'; obstacleId: string; became: 'open' | 'broken' | 'revealed' | 'unlocked' }
-  | { kind: 'fail'; reason: 'full' | 'noValidPlacement' | 'outOfBatches' }
+export type ReleaseEvent =
+  /** A batch cube arrived in `cell`. */
+  | { kind: 'land'; cubeId: string; color: CubeColor; cell: number; order: number }
+  /** An existing cube was pushed one cell along to make room. */
+  | { kind: 'shove'; cubeId: string; from: number; to: number }
+  /** `cubeIds` were connected and popped. `size` >= matchSize. */
+  | { kind: 'clear'; cubeIds: string[]; color: CubeColor; cells: number[]; size: number; order: number }
   | { kind: 'complete' }
+  | { kind: 'fail'; reason: FailReason }

@@ -91,20 +91,6 @@ export const STATUS = {
   danger:  0xf0605f,
 } as const
 
-/** Obstacle materials. */
-export const OBSTACLE = {
-  curtain:      0xa98bdd,
-  curtainDark:  0x8468bd,
-  curtainSlat:  0x6d54a0,
-  ice:          0xbfe8ff,
-  iceDeep:      0x8fcdf0,
-  iceRim:       0xe8f8ff,
-  barrier:      0xff9f43,
-  barrierDark:  0xd97a1c,
-  crate:        0xcdbb9e,
-  crateDark:    0xa8946f,
-} as const
-
 /**
  * Motion vocabulary. Named by *what happens*, not by duration, so a call site
  * reads as intent and a retune happens in one place.
@@ -112,10 +98,8 @@ export const OBSTACLE = {
 export const MOTION = {
   /** Batch card press / release. */
   press: 90,
-  /** A cube flying from the tray into the belt. */
-  enter: 320,
-  /** A cube sliding along the belt to compact. */
-  slide: 240,
+  /** A cube falling from the chute into its cell. */
+  drop: 260,
   /** Landing squash. */
   land: 150,
   /** Matched cubes drawing together before they pop. */
@@ -124,8 +108,6 @@ export const MOTION = {
   anticipate: 95,
   /** The pop itself. */
   clear: 260,
-  /** Obstacle state changes — deliberately the slowest thing on screen. */
-  obstacle: 460,
   /** Board settle before an end-of-level panel. */
   settle: 420,
 } as const

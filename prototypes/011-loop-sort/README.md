@@ -1,372 +1,198 @@
-# Prototype 011 — Loop Sort DNA
+# 011 — Loop Sort: Continuous Conveyor Match-3
 
-## Hypothesis
+> **The question this prototype exists to answer:**
+> Is it fun to watch a continuously moving system, predict where cubes will be,
+> and decide what to inject into it?
 
-> Is "choose which batch enters → cubes automatically sort around a loop → matches resolve → board changes → choose again" an engaging mobile puzzle loop?
+Not "can the player sort cubes". The player never places a cube.
 
-This is a mechanical study of the structure, not a clone. No original art, levels, UI, text or audio is reproduced.
+---
 
-## Core mechanic
+## The mechanic in one paragraph
+
+The belt is a ring of fixed cells that rotates continuously and never stops. One
+point in *screen* space — the intake chute at the bottom — does not move. As the
+ring turns, a different cell passes under the chute every moment. Tapping a batch
+drops its cubes into whichever cell is under the chute **at that instant**.
+
+So the player supplies the colour and the belt supplies the position. Neither
+alone is a decision; together they are the whole game:
 
 ```
-LOOK → CHOOSE → TAP → WATCH → ANTICIPATE → MATCH/FAIL → BOARD CHANGES → CHOOSE AGAIN
+OBSERVE  →  PREDICT  →  CHOOSE  →  WATCH  →  MATCH  →  POP  →  OBSERVE
 ```
 
-The player never drags a cube. The only input is **which batch to send next**. Everything after the tap is automatic, deterministic and watchable.
+The bracket that snaps from cell to cell under the chute is the key affordance:
+it answers "where would this batch land if I tapped right now?" Without it the
+player can see the belt move but cannot aim, and the mechanic collapses into
+guessing.
 
-## Rules
+## The three rules
 
-- **Colours:** red, blue, green, yellow.
-- **Match size:** 3 contiguous same-colour cubes clear (per-level, default 3).
-- **Belt:** a ring of `capacity` cells. Cubes compact toward slot 0 (marked on screen).
-- **Routing:** an incoming cube of colour C joins the **longest existing run of C**, ties breaking to the lowest slot index, shifting the rest of the segment up. With no run of C it appends at the first free cell. With no free cell anywhere, the level is lost.
-- **Batch entry:** cubes enter **one at a time in array order**, each fully resolving (matches → chains → obstacles) before the next. This is what makes a batch's outcome predictable, and therefore a decision.
-- **Chains:** after each clear the belt compacts and is rescanned, so one insertion can cascade.
-- **Junk colours** (usually yellow) never reach match size and occupy a cell permanently. That is the pressure that makes capacity matter.
-- **Failure:** the belt fills, or the batch queue runs out with goals unmet.
+1. **Cubes never move relative to the belt.** They ride in their cell. A gap is a
+   real, persistent object that travels around the loop with everything else.
+2. **A full cell shoves.** Drop onto an occupied cell and that cube — plus every
+   cube touching it in the travel direction — slides one cell along into the
+   first gap ahead. This is the only way cubes ever change cells.
+3. **Three touching cubes of one colour pop.** Connectivity is checked around the
+   ring; an empty cell breaks a run. A run of four or five pops whole.
 
-### Dividers
+### Why cubes do not compact
 
-Three things split the belt into segments that cubes never compact across:
+An earlier build packed the belt toward a fixed end after every action. Gaps
+closed on their own, so matches assembled themselves and the player's timing
+stopped mattering. Persistent gaps are what make the belt a system you aim at
+rather than a system that resolves itself.
 
-| Divider | Effect | Opens when |
+---
+
+## Files
+
+| File | Holds |
+|---|---|
+| `LoopSortTypes.ts` | Pure types. No Phaser. |
+| `LoopSortLogic.ts` | Pure rules: rotation, intake cell, shove, runs, matching, win/lose. No Phaser. |
+| `LoopSortTuning.ts` | Every knob worth turning during a playtest. |
+| `LoopSortLevels.ts` | Ten hand-authored levels. |
+| `LoopSortTheme.ts` | Colours, materials, motion vocabulary. |
+| `LoopSortVisuals.ts` | Pure drawing functions + the arc-length `LoopTrack`. |
+| `LoopSortScene.ts` | Presentation and timing only. |
+
+`Logic`, `Types`, `Tuning` and `Levels` are Phaser-free on purpose: they compile
+and run under plain node, which is how the level set was balanced (see below).
+
+## How motion works
+
+Nothing on the belt is tweened to a screen position. Every belt object — cube,
+empty well, tread bar, target bracket — is placed each frame from one arc-length
+sample of the track:
+
+```
+screenPos = track.at(((rotation + cell) / capacity) mod 1)
+```
+
+`LoopTrack` parameterises the rounded rectangle by real arc length, so a cube
+keeps a constant speed through the corners instead of accelerating round them.
+
+A shove changes a cube's logical `cell` by one; its drawn `visCell` chases it
+exponentially (`tuning.slideRate`). That is the entire movement system, and it is
+why the belt never snaps or teleports.
+
+## Tuning
+
+`LoopSortTuning.ts`:
+
+| Knob | Does |
+|---|---|
+| `speedScale` | Multiplies every level's belt speed |
+| `capacityBonus` | Added to every level's cell count |
+| `matchSizeOverride` | Non-zero overrides every level's match size |
+| `entryStagger` | Gap between two cubes of one batch arriving |
+| `matchDelay` | The held beat between "they connected" and "they pop" |
+| `slideRate` | How fast a shoved cube catches up to its cell |
+| `paused` | Freezes belt travel (debug only) |
+
+Per-level: `capacity`, `speed`, `matchSize`, `offerCount`, `initialBelt`,
+`batchQueue`, `goal`.
+
+## Debug controls
+
+`DebugOverlay` already owns `R` (restart), `D` (toggle) and `ESC` (menu). This
+prototype adds:
+
+| Key | Does |
+|---|---|
+| `P` | Pause / resume belt travel |
+| `O` | Cycle belt speed: 1x → 0.5x → 0.25x → 1.5x |
+| `N` / `B` | Next / previous level |
+
+`?lvl=4` in the URL opens level 5 directly.
+
+The overlay watches level, state, the belt as a string (`r.r.b.b.g.g.`), cube and
+free-cell counts, belt speed, match size and progress, and the current intake
+cell.
+
+---
+
+## Level set
+
+Ten levels, not fifty — short enough to replay end to end in one playtest.
+
+| # | Name | Teaches |
 |---|---|---|
-| **Curtain** | Its slots are unusable | N cubes of a required colour are cleared |
-| **Ice** | The frozen cube is inert and immovable | N cubes of a required colour are cleared |
-| **Barrier** | Nothing crosses the wall between two slots | N cubes of a required colour are cleared |
-| **Hidden** | Contents unreadable (logic still knows) | After N total clears |
+| 1 | First Loop | Tap, a cube joins, three touching pop |
+| 2 | Two Trains | A batch lands as one piece — aim the pair |
+| 3 | Mind the Gap | Land *in* the gap, not beside it |
+| 4 | Three Colours | Three colours competing for the same cells |
+| 5 | Tight Belt | Ten cells: a batch you cannot cash in is cells gone |
+| 6 | Faster Loop | Same puzzle, more speed |
+| 7 | Wait For It | Two offers, four free cells — let the belt come to you |
+| 8 | Dead Weight | A batch no goal wants blocks an offer slot forever |
+| 9 | Two Chances | More matches available than you have room to set up |
+| 10 | The Machine | Four colours, a tight belt, a moving seam |
 
-Hidden is information-only — it never changes the logical board.
+No obstacles. No ice, curtains, barriers, hidden cells, split belts or portals —
+deliberately. Those come only if the pure conveyor mechanic proves interesting.
 
-## Architecture
+### How the set was balanced
 
-```
-LoopSortTypes.ts    types + constants          ← zero Phaser
-LoopSortLogic.ts    belt, routing, matching,   ← zero Phaser, runs under node
-                    obstacles, state machine
-LoopSortLevels.ts   20 handcrafted levels      ← zero Phaser
-LoopSortScene.ts    Phaser presentation
-```
+The logic is Phaser-free, so the whole decision space is simulable. Because the
+player can wait for any cell to reach the intake, a move is really
+`(batch × cell)` — so a solver can enumerate every move a patient player could
+make. Two players were simulated per level:
 
-`selectBatch()` returns `{ next, events }`. The **event log is the only contract** between logic and view — the scene plays it back as a timeline and never derives game state from sprite positions.
+* a **thoughtful** player (greedy on goal progress, then free cells)
+* a **random** player (200 runs)
 
-```
-insert · shift · clear(chainIndex) · obstacle · fail · complete
-```
-
-### Timeline
-
-| Event | Tween runs for | Timeline advances by |
+| Level | Thoughtful | Random wins |
 |---|---|---|
-| insert | 300ms | 165ms |
-| shift (consecutive shifts move together) | 230ms | 125ms |
-| clear | 300ms | 155ms |
-| obstacle | 420ms | 230ms |
-| chain step | — | +165ms beat |
-
-Input is locked for the whole timeline. A 3-cube batch with one clear runs
-~1.1s end to end.
-
-> **The second column is the point.** An earlier build cut every duration to
-> 2–10ms because advancing the timeline by the full duration queued events
-> end-to-end and locked input for ~2s. That fixed the lock and destroyed the
-> mechanic: WATCH → ANTICIPATE is half the hypothesis, and teleporting cubes
-> cannot be anticipated. The fix is overlap, not speed — each step is ~55% of
-> its duration, so a cube is still settling as the next one launches.
-
-## Visual direction — "Soft Toy Factory"
-
-> A small sorting machine built out of moulded plastic toy parts, sitting on a
-> warm paper desk.
-
-```
-cream paper ground  ·  pastel blue-grey machine  ·  saturated soft cubes
-```
-
-The machine is deliberately the **least saturated** thing on screen. Cubes are
-the only strongly coloured objects, which is what makes them read as the subject
-rather than as decoration. Every colour, radius, shadow and duration lives in
-`LoopSortTheme.ts`; nothing downstream picks a hex literal.
-
-The foundation theme underneath is `cozy`, re-coloured — so panels, buttons,
-badges and shadows inherit the direction automatically.
-
-### Cubes
-
-One function draws a cube, and nothing else is allowed to:
-
-```
-shadow → body → underside shade → top sheen → emblem → specular → rim
-```
-
-Each colour carries a moulded **emblem** (circle / square / triangle / diamond).
-It is redundant with hue on purpose: red-green is the common confusion, and a
-shape pressed into a toy block is both an accessibility affordance and a
-period-correct detail. Green leans teal for the same reason.
-
-### Presentation architecture
-
-```
-LoopSortTypes.ts     types + constants            ← zero Phaser
-LoopSortLogic.ts     belt, routing, matching      ← zero Phaser, runs under node
-LoopSortLevels.ts    20 handcrafted levels        ← zero Phaser
-LoopSortTheme.ts     design tokens                ← colours, motion, materials
-LoopSortVisuals.ts   pure draw functions          ← cube, slot, machine, card
-LoopSortScene.ts     composition, timing, juice
-```
-
-`LoopSortVisuals.ts` never touches a scene, a tween or game state — which is
-exactly what lets the scene bake all of it into textures. It builds on
-`src/presentation/Draw.ts` (rounded cards, layered shadows, sheens) rather than
-re-deriving them.
-
-**Prototype-scoped on purpose.** A conveyor made of toy parts is not a
-foundation concern (`docs/ai-rules.md` rules 2 and 5). What *was* genuinely
-reusable went the other way — see **Foundation changes** below.
-
-### Composition
-
-```
-LEVEL 7  ·  ● ● ● ○ ○  ·  goal chips     ← tertiary
-        ┌─────────────────────┐
-        │   conveyor + cubes  │          ← PRIMARY
-        │      (hub: free)    │
-        └─────────────────────┘
-          [ batch ] [ batch ]            ← secondary, thumb zone
-```
-
-Two deliberate deviations from a top-down reading of the brief:
-
-- **The batch tray stays at the bottom.** The brief's sketch puts it above the
-  board; the thumb zone is at the bottom of a 9:16 phone, and the tray is the
-  only thing the player ever touches.
-- **Goals are in the header, capacity is in the hub.** Goals are level state, so
-  they belong with the level number. Remaining capacity is *machine* state and
-  is the whole tension of the game, so it sits at the belt — which also stops
-  the loop's interior being ~700px of dead pixels.
-
-### Animation language
-
-| Moment | Motion |
-|---|---|
-| Card press | sinks 9px toward its shadow, scale 0.97, shadow compresses |
-| Card release | springs back on `Back.Out` |
-| Cube enters | arcs from the tapped card, scales up with overshoot |
-| Cube lands | squash-and-stretch, a puff of dust, settles |
-| Cube compacts | `Back.Out` slide, staggered 30ms per cube — a ripple, not a block |
-| Match | attract → hold → pop (see below) |
-| Obstacle | shudder → break → reveal, ~460ms, the slowest thing on screen |
-| Level complete | cubes hop in sequence, confetti, *then* the panel |
-
-Nothing bounces by default. Overshoot is used where an object has mass and
-settles; `Sine`/`Quad` where it does not.
-
-### The match
-
-The payoff is three beats, and the **animation** carries the information — the
-floating count is a confirmation, not the message:
-
-```
-attract    matched cubes lean into each other and swell        150ms
-hold       flashed white; nothing moves, the connection lands   95ms
-pop        burst in the cube's own colour, shrink out          260ms
-```
-
-Chain depth escalates burst size, camera punch and the floating label, and
-switches the audio slot from `match` to `chain`. It never escalates past the
-point where the board stops being readable.
-
-### Obstacle presentation
-
-Every obstacle is a physical object with a readable break.
-
-| Obstacle | Sequence |
-|---|---|
-| **Curtain** | roller shutter shudders, then rolls up slat by slat, dust |
-| **Ice** | frost cracks in two stages, then shatters into falling shards; the cube underneath squashes as it is freed |
-| **Barrier** | bolted gate shudders, sparks, retracts into the rails |
-| **Hidden** | crate shudders, then lifts away and tips — a discovery, so it pops upward rather than fading |
-
-Each carries an **unlock chip** — a cube face and a count — pushed outside the
-belt along the outward normal. On the left and right straights that would push
-it off-screen, so it drops below the slot instead; clamping alone slid it back
-on top of the thing it labels.
-
-### Interaction
-
-```
-IDLE → (pointerdown) PRESSED → (pointerup over card) RELEASE → batch flies
-                           └── (finger slides off) → IDLE
-```
-
-Cards use the foundation's `makePressable`, so `onPress` fires on **release over
-the target**, never on press — sliding off cancels. Hit areas are padded 18
-units beyond the visual. Mouse behaves identically for desktop testing.
-
-### Mobile layout
-
-Portrait 1080×1920 via `applyPrototypeConfig()`. Verified at 360×800, 390×844,
-412×915 and 1080×1920. Header, hub and tray are positioned from
-`layout.safeRect`, so notches and gesture bars never clip them.
-
-### Performance
-
-Every static layer is baked (`bakeGraphics` / `bakeTexture`): machine, sockets,
-intake mark, hub plate, obstacles, goal chips, batch cards. Cubes share **one
-texture per colour** plus one shadow texture, keyed by cube size and released
-with the level. A cube costs seven fills to draw, and a Phaser `Graphics`
-re-tessellates its whole command list every frame — thirteen of those is the
-single most expensive thing a board like this can do.
-
-### Audio
-
-Semantic hooks only: `select`, `move`, `match`, `chain`, `destroy`, `complete`,
-`fail`. The repo ships no audio assets, so every call is a silent no-op; the
-call sites name the *event*, and what it sounds like is a property of the sound
-map, not of the scene.
-
-### Playtesting
-
-`?lvl=12` opens level 13 directly. Twenty levels is a lot to replay to reach the
-one being tuned.
-
-## Foundation changes made for this prototype
-
-Discovered here, extracted because they are not Loop Sort-specific:
-
-| Addition | Why it is reusable |
-|---|---|
-| `anim.squash()` | impact feedback for anything that lands |
-| `anim.anticipate()` | wind-up before a committed action |
-| `vfx.shards()` | anything that should break rather than vanish |
-| `vfx.dust()` | soft settling motes |
-| `applyBackground({ light })` | baked radial bloom behind a play area |
-| `ui.createDots()` | "3 of 5" progress without a number |
-| `bakeTexture()` | one shared texture behind many identical objects |
-| `SoundSlot` + `move` / `match` / `chain` | semantic audio vocabulary |
-
-Kept prototype-local: the conveyor, cube and slot rendering, the belt geometry,
-the obstacle sequences, and every colour in the palette.
-
-## Known limitations
-
-- **Audio is hooks only.** No assets ship, so the feedback is silent.
-- **The match sequence lengthens a turn.** attract + hold + pop is ~500ms; a
-  long chain is a second of watching. That is the intent, but it is the first
-  thing to retune if playtesters find it slow.
-- **Levels 6–20 got composition and object quality but not bespoke tuning.**
-  The first five are the showcase.
-- **The hub competes slightly with the belt on small screens.** At 360×800 the
-  ring is tight and the free-count sits close to the cubes.
-- **No reduced-motion path.** Every animation always plays.
-
-## Level progression
-
-| # | Name | Teaches | Cap |
-|---|---|---|---|
-| 1 | First Delivery | Tap a batch, cubes enter, matching cubes clear | 10 |
-| 2 | They Find Each Other | Cubes route to their own colour, not the end of the line | 10 |
-| 3 | Leftovers | Cubes that never reach three sit on the belt forever | 8 |
-| 4 | Three Ways | Spending space on junk early costs you later | 7 |
-| 5 | Tight Belt | Finish a colour before starting another | 7 |
-| 6 | Mixed Cargo | A mixed batch still sorts itself — read the whole batch | 7 |
-| 7 | Behind the Curtain | Clearing the required colour opens new belt space | 12 |
-| 8 | Rent the Space | Open the curtain before the small belt fills | 12 |
-| 9 | Two Rooms | The curtain colour is not the goal colour | 12 |
-| 10 | Frozen Solid | Ice splits the belt and never matches until it thaws | 10 |
-| 11 | Thaw First | The small side of the ice fills fast — free it early | 9 |
-| 12 | Cold Storage | Ice plus a tight belt: order is everything | 9 |
-| 13 | One Way In | Cubes can enter the far side but cannot come back | 10 |
-| 14 | Split Shift | Stranding a pair on the far side wastes it | 10 |
-| 15 | Narrow Gate | Barrier plus capacity — the near side is four cells | 9 |
-| 16 | Unmarked Crates | You start with cubes you cannot identify | 7 |
-| 17 | Blind Corner | Commit before you know — then adapt | 7 |
-| 18 | Late Reveal | Information arrives after two clears, not one | 7 |
-| 19 | Curtain and Ice | Two locks, one key colour each — which first? | 12 |
-| 20 | The Whole Machine | Barrier, curtain and hidden space at once | 13 |
-
-Levels 1–2 are deliberately **unlosable** (tutorial). Levels 3–20 are all losable — verified.
-
-## Verification
-
-All 20 levels were checked headlessly (BFS over batch orders, 400k node cap) for:
-
-- **Solvable** — at least one batch ordering completes it ✓ 20/20
-- **Failable** — at least one ordering loses ✓ 18/18 non-tutorial
-- **Deterministic** — same order replays byte-identical state *and* event log ✓
-- **Obstacle reachability** — every obstacle's unlock condition is satisfiable ✓
-- **Conservation** — belt + cleared == initial + inserted across 7,462 checks ✓
-
-Two real bugs were caught by that harness, not by eye:
-
-1. `insertCube` could pick a free cell *below* the insertion target on a not-yet-compacted belt, silently overwriting a cube. The conservation invariant exists to keep that class dead.
-2. A hidden region placed at high slot indices is **inert** — cubes compact toward slot 0 and immediately leave it. Hidden only bites at the front of the belt, or behind a divider that pins cubes in place. Levels 16–18 were rebuilt because of this.
-
-## Measured decision density
-
-Every reachable state was classified by how many of its choices still keep a win alive:
-
-| Levels | States with a fatal option |
-|---|---|
-| 1–2 | 0% (tutorial, correct) |
-| 3–9 | 10–21% |
-| 10, 13–15, 19 | 26–35% |
-| 11, 12 | 52–56% |
-| 16, 18, 20 | 8% |
-
-**The decision is real but sparse.** On most levels, 70–90% of turns have no losing option — the player is choosing between "win" and "win one pick slower", which is not the moment the hypothesis is about.
-
-The cause is structural: **ice is the only obstacle that removes space unconditionally and immediately.** Curtain and barrier withhold space the player did not yet need; hidden withholds information without costing anything.
-
-## Gameplay is untouched
-
-`LoopSortLogic.ts`, `LoopSortLevels.ts` and `LoopSortTypes.ts` have **zero
-changes** across every presentation pass. The scene still plays back
-`selectBatch()`'s event log and derives nothing from sprite positions. The
-timeline's *structure* — shift grouping, chain beats, run tokens, input lock —
-is unchanged. What changed is what is drawn and how long each tween runs.
-
-Bugs found and fixed while rebuilding the presentation:
-
-1. Baked belt layers were positioned at the texture's centre rather than at
-   `beltCentre`, putting every socket ~90px from the slot its cubes land in.
-2. The barrier gate was rotated along the lane instead of across it, so a wall
-   read as a stick lying on the belt.
-3. A cube matched **while its entry tween was still in flight** was stranded on
-   the board forever: `anim.squash` kills in-flight tweens on its target, so the
-   insert's landing callback destroyed the clear animation that had already
-   taken the cube over. Travel tweens are now tracked on the view and handed to
-   the match, and landing feedback checks the cube is not already clearing.
-
-## Playtest Observations
-
-*(to be filled in by hand)*
-
-What felt satisfying?
-
-What felt boring?
-
-Did choosing a batch feel meaningful?
-
-Did automatic sorting feel satisfying?
-
-Did the player understand why a cube moved?
-
-Were failures understandable?
-
-Which obstacle created interesting decisions?
-
-Which obstacle only added complexity?
-
-Did the player want to immediately retry?
-
-Do levels 11–12 read as unfair? (Two of three opening moves lose before anything is on screen.)
-
-## Future experiments — not implemented
-
-- Make curtain and barrier **cost** space rather than withhold it, so every obstacle applies ice-like pressure
-- Show the next batch after the offered ones, turning this into a lookahead puzzle
-- Let the player discard a batch at a price
-- Variable match size within a level
-- A belt that advances one step per pick regardless of input
-- Two interleaved loops sharing an entry point
+| 1 | win, 1 pick | 68% |
+| 2 | win, 2 picks | 80% |
+| 3 | win, 9 picks | 39% |
+| 5 | win, 9 picks | 29% |
+| 7 | win, 9 picks | 7% |
+| 8 | win, 12 picks | 1.5% |
+| 10 | win, 13 picks | 0.5% |
+
+The gap between the two columns *is* the measurement of whether choice matters.
+The first level set scored 84% for random play on level 2 and 1–4 picks
+everywhere, which is how it was caught: every belt handed the player an adjacent
+pair, so capacity and batch choice never bit. The current set widens the gap to
+0.5% by level 10.
+
+---
+
+## What we learned
+
+**The timing is the decision, and it works.** Splitting the choice into "which
+colour" (the batch) and "where" (the moment) produces the intended thought —
+*"if I release this now it lands between those two reds"* — from a single tap and
+no other input. Prediction comes from the belt, not from a control scheme.
+
+**The bracket carries the whole mechanic.** It is the difference between aiming
+and guessing. It is the first thing to keep in any follow-up.
+
+**Persistent gaps are the load-bearing rule.** The moment cubes compact on their
+own, the machine starts solving itself and the player becomes a spectator.
+
+**The shove is a better decision than expected.** Dropping onto an occupied cell
+is not a mistake — it is a way to push a run into a gap. It gives the "bad" half
+of the choice space real uses, which is what stops the game being a waiting
+exercise.
+
+### Biggest remaining uncertainty
+
+Whether *watching* stays interesting for more than a few minutes. Each release
+resolves in about a second, then the player waits for the seam to come round
+again — up to 15 seconds at level 1's speed. That dead time is where the
+prediction happens, but it is also the most likely place for the loop to feel
+slow. The honest test is a human playing levels 1–10 back to back and noticing
+whether the waiting reads as *anticipation* or as *delay*.
+
+### Recommended next experiment
+
+Give the player something to do with the waiting rather than speeding the belt
+up. The cheapest version: let a queued batch be *armed* — tap once to arm, and it
+releases automatically when the intake reaches a cell the player marks. That
+turns dead time into a committed prediction, which is the feeling this prototype
+is chasing, and it can be built on this logic without changing a rule.
