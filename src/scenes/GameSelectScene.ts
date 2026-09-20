@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import { applyLandscapeDesign } from '../core/PrototypeConfig'
+import { applyMenuDesign } from '../core/PrototypeConfig'
 import {
   createPresentation, Presentation,
   drawRoundedCard, drawShadow, bakeGraphics, hex, shade, mix,
@@ -99,9 +99,10 @@ export class GameSelectScene extends Phaser.Scene {
   constructor() { super({ key: 'GameSelectScene' }) }
 
   create(): void {
-    // The game size persists across scene transitions, so a portrait prototype
-    // would leave the menu at portrait dimensions on ESC. No-op at 960x540.
-    applyLandscapeDesign(this)
+    // The game size persists across scene transitions, so this also resets the
+    // size a portrait prototype left behind on ESC. On a phone it picks a
+    // portrait design space instead of letterboxing 960x540 into a strip.
+    applyMenuDesign(this)
 
     // The menu is the first thing anyone sees, so it uses the same presentation
     // layer the prototypes do. Its own background is drawn below with
@@ -112,13 +113,34 @@ export class GameSelectScene extends Phaser.Scene {
 
     const W = this.scale.width
     const H = this.scale.height
-    const cardW  = Math.min(480, W - 40)
-    const cardH  = 64
-    const cardGap = 12
-    const topPad  = 90   // below fixed header
-    const botPad  = 76   // clears the fixed footer + its fade
 
-    const contentH = topPad + PROTOTYPES.length * (cardH + cardGap) - cardGap + botPad
+    // Every metric below is authored against the 1080 reference and scaled by
+    // the design space's short edge, exactly like the typography ramp. At
+    // landscape 960x540 `u` is 0.5 and these resolve to the original numbers;
+    // in portrait they resolve to twice that, which is what makes the cards
+    // thumb-sized on a phone instead of 28px tall.
+    const k = Math.max(0.3, Math.min(W, H) / 1080)
+    const u = (n: number): number => Math.round(n * k)
+
+    // Prototypes 001-010 were authored for landscape 960x540 and are never
+    // retrofitted (docs/ai-rules.md rule 13), so on a phone they letterbox to a
+    // strip. The menu says so rather than letting the player find out.
+    const portrait = H > W
+
+    const cardW   = Math.min(u(960), W - u(80))
+    const cardH   = u(146)
+    const cardGap = u(24)
+    const topPad  = portrait ? u(238) : u(180)   // below fixed header
+    const botPad  = u(152)                       // clears the fixed footer + its fade
+
+    // When the whole list fits — which it now does on a phone — centre it in
+    // the space between header and footer instead of leaving a hole at the
+    // bottom.
+    const listH = PROTOTYPES.length * (cardH + cardGap) - cardGap
+    const slack = Math.max(0, (H - topPad - botPad) - listH)
+    const startY = topPad + slack / 2
+
+    const contentH = startY + listH + botPad
     const maxScroll = Math.max(0, contentH - H)
     const cam = this.cameras.main
     cam.setBounds(0, 0, W, Math.max(H, contentH))
@@ -140,24 +162,37 @@ export class GameSelectScene extends Phaser.Scene {
     // list scrolls straight through the title.
     const headBand = this.add.graphics().setScrollFactor(0).setDepth(95)
     headBand.fillStyle(bgTop, 1)
-    headBand.fillRect(0, 0, W, 76)
+    const bandH = portrait ? u(210) : u(152)
+    headBand.fillRect(0, 0, W, bandH)
     headBand.fillGradientStyle(bgTop, bgTop, bgTop, bgTop, 1, 1, 0, 0)
-    headBand.fillRect(0, 76, W, 26)
+    headBand.fillRect(0, bandH, W, u(52))
 
-    this.add.text(W / 2, 34, 'AI GAME LAB', this.p.text('subheading', t.colors.text))
+    this.add.text(W / 2, u(68), 'AI GAME LAB', this.p.text('subheading', t.colors.text))
       .setOrigin(0.5).setScrollFactor(0).setDepth(100)
 
-    this.add.text(W / 2, 62, 'Select a prototype', this.p.text('caption', t.colors.muted))
+    this.add.text(W / 2, u(124), 'Select a prototype', this.p.text('caption', t.colors.muted))
       .setOrigin(0.5).setScrollFactor(0).setDepth(100)
+
+    if (portrait) {
+      this.add.text(
+        W / 2, u(186),
+        '001\u2013010 are landscape \u2014 rotate your phone for those',
+        {
+          ...this.p.text('caption', mix(t.colors.muted, t.colors.background, 0.4)),
+          align: 'center',
+          wordWrap: { width: W - u(120) },
+        },
+      ).setOrigin(0.5).setScrollFactor(0).setDepth(100)
+    }
 
     // ── Scrollable cards ──────────────────────────────────────────────────────
     PROTOTYPES.forEach((proto, i) => {
-      const cy = topPad + i * (cardH + cardGap) + cardH / 2
+      const cy = startY + i * (cardH + cardGap) + cardH / 2
 
       // Both card states are baked once. Eleven live Graphics, each spending
       // seven path fills on shadow + sheen + bevel, re-tessellate on the CPU
       // every frame and cost this scene more than half its frame rate.
-      const bakePad = 24
+      const bakePad = u(48)
       const bakeCard = (hovered: boolean): Phaser.GameObjects.Image =>
         bakeGraphics(this, cardW + bakePad * 2, cardH + bakePad * 2, (g, bw, bh) => {
           drawShadow(g, bw / 2, bh / 2, cardW, cardH, { radius: t.radius.md }, t)
@@ -170,7 +205,7 @@ export class GameSelectScene extends Phaser.Scene {
           }, t)
           // Accent stripe, clipped to the card's left corners.
           g.fillStyle(proto.color, 1)
-          g.fillRoundedRect(bw / 2 - cardW / 2, bh / 2 - cardH / 2, 5, cardH, {
+          g.fillRoundedRect(bw / 2 - cardW / 2, bh / 2 - cardH / 2, u(10), cardH, {
             tl: t.radius.md, tr: 0, bl: t.radius.md, br: 0,
           })
         })
@@ -182,13 +217,15 @@ export class GameSelectScene extends Phaser.Scene {
         hoverImg.setVisible(hovered)
       }
 
-      const num = this.add.text(-cardW / 2 + 26, -9, proto.number,
+      const num = this.add.text(-cardW / 2 + u(52), -u(30), proto.number,
         this.p.text('caption', proto.color)).setOrigin(0, 0.5)
-      const name = this.add.text(-cardW / 2 + 68, -10, proto.name,
+      const name = this.add.text(-cardW / 2 + u(136), -u(32), proto.name,
         this.p.text('body', t.colors.text)).setOrigin(0, 0.5)
-      const desc = this.add.text(-cardW / 2 + 68, 14, proto.description,
-        this.p.text('caption', t.colors.muted)).setOrigin(0, 0.5)
-      const chev = this.add.text(cardW / 2 - 20, -2, '\u203a',
+      const desc = this.add.text(-cardW / 2 + u(136), u(28), proto.description, {
+        ...this.p.text('caption', t.colors.muted),
+        wordWrap: { width: cardW - u(200) },
+      }).setOrigin(0, 0.5).setLineSpacing(u(6))
+      const chev = this.add.text(cardW / 2 - u(40), -u(4), '\u203a',
         this.p.text('heading', t.colors.border)).setOrigin(0.5)
 
       const card = this.add.container(W / 2, cy, [idleImg, hoverImg, num, name, desc, chev])
@@ -204,7 +241,7 @@ export class GameSelectScene extends Phaser.Scene {
         paint(true)
         chev.setColor(hex(proto.color))
         this.tweens.add({
-          targets: card, x: W / 2 + 4,
+          targets: card, x: W / 2 + u(8),
           duration: t.duration.fast, ease: t.ease.out,
         })
       })
@@ -247,20 +284,20 @@ export class GameSelectScene extends Phaser.Scene {
     const b = t.colors.background
     const botMask = this.add.graphics().setScrollFactor(0).setDepth(95)
     botMask.fillGradientStyle(b, b, b, b, 0, 0, 1, 1)
-    botMask.fillRect(0, H - 78, W, 48)
+    botMask.fillRect(0, H - u(156), W, u(96))
     botMask.fillStyle(b, 1)
-    botMask.fillRect(0, H - 30, W, 30)
+    botMask.fillRect(0, H - u(60), W, u(60))
 
     // ── Fixed footer ──────────────────────────────────────────────────────────
     const scrollHint = maxScroll > 0 ? 'Scroll / drag to see more  \u00b7  ' : ''
-    this.add.text(W / 2, H - 12, `${scrollHint}ESC from any prototype returns here`,
+    this.add.text(W / 2, H - u(24), `${scrollHint}ESC from any prototype returns here`,
       this.p.text('caption', mix(t.colors.muted, t.colors.background, 0.45)))
       .setOrigin(0.5, 1).setScrollFactor(0).setDepth(100)
 
     // ── Mouse wheel scroll ────────────────────────────────────────────────────
     this.input.on('wheel',
       (_p: unknown, _o: unknown, _dx: number, deltaY: number) => {
-        cam.scrollY = Phaser.Math.Clamp(cam.scrollY + deltaY * 0.6, 0, maxScroll)
+        cam.scrollY = Phaser.Math.Clamp(cam.scrollY + deltaY * 0.6 * k * 2, 0, maxScroll)
       },
     )
 
@@ -278,7 +315,7 @@ export class GameSelectScene extends Phaser.Scene {
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       if (!p.isDown) return
       const dy = dragStartY - p.y
-      if (Math.abs(dy) > 6) {
+      if (Math.abs(dy) > u(12)) {
         this._dragging = true
         cam.scrollY = Phaser.Math.Clamp(dragStartScrollY + dy, 0, maxScroll)
       }
@@ -291,8 +328,8 @@ export class GameSelectScene extends Phaser.Scene {
 
     // ── Keyboard scroll ───────────────────────────────────────────────────────
     const kb = this.input.keyboard!
-    kb.on('keydown-DOWN', () => { cam.scrollY = Phaser.Math.Clamp(cam.scrollY + 60, 0, maxScroll) })
-    kb.on('keydown-UP',   () => { cam.scrollY = Phaser.Math.Clamp(cam.scrollY - 60, 0, maxScroll) })
+    kb.on('keydown-DOWN', () => { cam.scrollY = Phaser.Math.Clamp(cam.scrollY + u(120), 0, maxScroll) })
+    kb.on('keydown-UP',   () => { cam.scrollY = Phaser.Math.Clamp(cam.scrollY - u(120), 0, maxScroll) })
 
     cam.fadeIn(300, 0, 0, 0)
   }

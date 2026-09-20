@@ -333,18 +333,42 @@ export function bakeGraphics(
   height: number,
   draw: (g: Phaser.GameObjects.Graphics, w: number, h: number) => void,
 ): Phaser.GameObjects.Image {
-  const w = Math.max(1, Math.ceil(width))
-  const h = Math.max(1, Math.ceil(height))
-  const key = `__bake_${++bakeSeq}`
-
-  const g = scene.make.graphics({}, false)
-  draw(g, w, h)
-  g.generateTexture(key, w, h)
-  g.destroy()
-
+  const key = bakeTexture(scene, `__bake_${++bakeSeq}`, width, height, draw)
   const img = scene.add.image(0, 0, key).setOrigin(0.5)
   img.once(Phaser.GameObjects.Events.DESTROY, () => {
     if (scene.textures.exists(key)) scene.textures.remove(key)
   })
   return img
+}
+
+/**
+ * Bakes a drawing into a **named, shared** texture and returns the key.
+ *
+ * Use this instead of `bakeGraphics` when many objects show the same art — a
+ * board full of identically-drawn pieces, a repeated shadow. One texture backs
+ * every `scene.add.image(x, y, key)`, so thirteen crates cost one bake.
+ *
+ * Returns immediately if the key already exists, which makes it safe to call
+ * per object in a build loop.
+ *
+ * Unlike `bakeGraphics`, the caller owns the texture's lifetime: include any
+ * size or variant that affects the art in the key, and call
+ * `scene.textures.remove(key)` when rebuilding at a different size.
+ */
+export function bakeTexture(
+  scene: Phaser.Scene,
+  key: string,
+  width: number,
+  height: number,
+  draw: (g: Phaser.GameObjects.Graphics, w: number, h: number) => void,
+): string {
+  if (scene.textures.exists(key)) return key
+
+  const w = Math.max(1, Math.ceil(width))
+  const h = Math.max(1, Math.ceil(height))
+  const g = scene.make.graphics({}, false)
+  draw(g, w, h)
+  g.generateTexture(key, w, h)
+  g.destroy()
+  return key
 }

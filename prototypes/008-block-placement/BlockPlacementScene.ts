@@ -142,7 +142,14 @@ export class BlockPlacementScene extends Phaser.Scene {
     this.dealNewTray()
     this.setupInput()
 
-    this.scale.on('resize', () => { this.setupLayout(); this.renderAll() })
+    // `this.scale` is the GLOBAL ScaleManager, shared by every scene, so a
+    // listener registered here outlives this scene unless it is removed. Since
+    // per-prototype design sizes landed, entering a prototype with a different
+    // design space fires setGameSize -> 'resize' on every stale listener, which
+    // then runs this scene's layout code against a destroyed scene.
+    const onResize = (): void => { this.setupLayout(); this.renderAll() }
+    this.scale.on('resize', onResize)
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.off('resize', onResize))
     this.vfx.fadeTransition(300)
   }
 

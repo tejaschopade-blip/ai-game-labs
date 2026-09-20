@@ -54,17 +54,69 @@ LoopSortScene.ts    Phaser presentation
 insert · shift · clear(chainIndex) · obstacle · fail · complete
 ```
 
-Timings: insert 260ms, shift 160ms (consecutive shifts move together), clear 320ms, cascades staggered 140ms per chain step. Input is locked for the whole timeline.
+### Timeline
+
+| Event | Tween runs for | Timeline advances by |
+|---|---|---|
+| insert | 300ms | 165ms |
+| shift (consecutive shifts move together) | 230ms | 125ms |
+| clear | 300ms | 155ms |
+| obstacle | 420ms | 230ms |
+| chain step | — | +165ms beat |
+
+Input is locked for the whole timeline. A 3-cube batch with one clear runs
+~1.1s end to end.
+
+> **The second column is the point.** An earlier build cut every duration to
+> 2–10ms because advancing the timeline by the full duration queued events
+> end-to-end and locked input for ~2s. That fixed the lock and destroyed the
+> mechanic: WATCH → ANTICIPATE is half the hypothesis, and teleporting cubes
+> cannot be anticipated. The fix is overlap, not speed — each step is ~55% of
+> its duration, so a cube is still settling as the next one launches.
 
 ## Mobile presentation
 
 First prototype in the repo to run **portrait 1080×1920**, via Foundation V3's `applyPrototypeConfig()`. Everything before it is landscape 960×540 and is not retrofitted.
 
-Remaining capacity is deliberately readable three ways, because the decision is often sparse and the squeeze is what supplies the tension:
+Built on the V4 presentation layer (`docs/presentation.md`) via
+`createPresentation(...)` with a `puzzle` theme recoloured to an amber accent —
+warm chrome for the machine, so none of the four cube colours is ever reused
+for UI.
+
+### The loop is a dashboard
+
+Goals and remaining capacity live **inside the ring**, not stacked above it.
+They used to sit in a header while ~700px of the loop's interior stayed empty;
+both readouts describe the belt, so they belong at the belt, where the player is
+already looking.
+
+Remaining capacity is deliberately readable three ways, because the decision is
+often sparse and the squeeze is what supplies the tension:
 
 1. **Empty sockets** drawn on the belt — spatial, no counting
-2. **A capacity bar** that fills as the belt does
+2. **An arc gauge** around the free count, filling as the belt does
 3. **An `N FREE` readout** that turns amber at 60% and red at 85%
+
+### Belt
+
+The track is drawn along the *dense* rounded-rect path rather than through the
+sampled slot centres, so its corners no longer bulge away from the cubes. Casing,
+recessed channel and treads that run **across** the lane (stubs along the rails
+read as a clock face). Slot 0 — the compaction target — is marked with a
+breathing amber intake chevron rather than a slightly-brighter outline.
+
+### Performance
+
+Every static layer is baked (`bakeGraphics` / `bakeTexture`): track, sockets,
+intake mark, obstacles, goal chips. Cubes share **one texture per (colour,
+frozen)** pair plus one shadow texture, keyed by cube size and released with the
+level. Thirteen live `Graphics` re-tessellating a rounded rect, a sheen, a bevel
+and a frost overlay every frame is the thing that makes a portrait board crawl.
+
+### Playtesting
+
+`?lvl=12` opens level 13 directly. Twenty levels is a lot to replay to reach the
+one being tuned.
 
 ## Level progression
 
@@ -123,6 +175,21 @@ Every reachable state was classified by how many of its choices still keep a win
 **The decision is real but sparse.** On most levels, 70–90% of turns have no losing option — the player is choosing between "win" and "win one pick slower", which is not the moment the hypothesis is about.
 
 The cause is structural: **ice is the only obstacle that removes space unconditionally and immediately.** Curtain and barrier withhold space the player did not yet need; hidden withholds information without costing anything.
+
+## Presentation changes vs. the previous build
+
+**No gameplay rule changed.** `LoopSortLogic.ts`, `LoopSortLevels.ts` and
+`LoopSortTypes.ts` are untouched; the scene still plays back `selectBatch()`'s
+event log and derives nothing from sprite positions. The timeline's *structure*
+— shift grouping, chain beats, run tokens, input lock — is unchanged. What
+changed is what is drawn, and how long each tween runs (see **Timeline**).
+
+Two bugs were found and fixed while rebuilding it:
+
+1. Baked belt layers were positioned at the texture's centre rather than at
+   `beltCentre`, putting every socket ~90px away from the slot its cubes land in.
+2. The barrier gate was rotated along the lane instead of across it, so a wall
+   read as a stick lying on the belt.
 
 ## Playtest Observations
 
