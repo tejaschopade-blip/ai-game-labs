@@ -2,8 +2,8 @@
 // inherit it from GameConfig — do not change it.
 export const DESIGN_WIDTH  = 960
 export const DESIGN_HEIGHT = 540
-export const PROTOTYPE_NAME = '011-loop-sort'
-export const ACTIVE_SCENE   = 'LoopSortScene'
+export const PROTOTYPE_NAME = '012-arrows'
+export const ACTIVE_SCENE   = 'ArrowsScene'
 
 // Aliases for backward compatibility with existing prototypes
 export const GAME_WIDTH  = DESIGN_WIDTH

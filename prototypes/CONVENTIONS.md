@@ -296,7 +296,8 @@ this.input.on('wheel', (_p, _o, _dx, deltaY) => {
 | 009 | Sort Lab | `SortLabScene` |
 | 010 | Cozy Maze | `CozyMazeScene` |
 | 011 | Loop Sort DNA | `LoopSortScene` |
-| **012** | **next** | — |
+| 012 | Arrows | `ArrowsScene` |
+| **013** | **next** | — |
 
 ---
 

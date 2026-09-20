@@ -16,6 +16,7 @@ import { BlockPlacementScene } from '../../prototypes/008-block-placement/BlockP
 import { SortLabScene } from '../../prototypes/009-sort-lab/SortLabScene'
 import { CozyMazeScene } from '../../prototypes/010-cozy-maze/CozyMazeScene'
 import { LoopSortScene } from '../../prototypes/011-loop-sort/LoopSortScene'
+import { ArrowsScene } from '../../prototypes/012-arrows/ArrowsScene'
 import { GameSelectScene } from '../scenes/GameSelectScene'
 
 export const GameConfig: Phaser.Types.Core.GameConfig = {
@@ -23,7 +24,7 @@ export const GameConfig: Phaser.Types.Core.GameConfig = {
   // Matches the default `puzzle` theme so the letterbox around a FIT-scaled
   // canvas blends with the game rather than framing it in a different black.
   backgroundColor: hex(Themes.puzzle.colors.background),
-  scene: [BootScene, PreloadScene, GameSelectScene, PrototypeScene, FoundationTestScene, RotationWorldScene, LaserMirrorScene, TimeEchoScene, ChainReactionScene, StealPropertiesScene, SokobanScene, BlockPlacementScene, SortLabScene, CozyMazeScene, LoopSortScene],
+  scene: [BootScene, PreloadScene, GameSelectScene, PrototypeScene, FoundationTestScene, RotationWorldScene, LaserMirrorScene, TimeEchoScene, ChainReactionScene, StealPropertiesScene, SokobanScene, BlockPlacementScene, SortLabScene, CozyMazeScene, LoopSortScene, ArrowsScene],
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,

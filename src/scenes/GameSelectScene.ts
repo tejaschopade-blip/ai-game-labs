@@ -91,6 +91,13 @@ const PROTOTYPES: ProtoEntry[] = [
     description: 'The belt never stops — time your batch so three colours meet',
     color: 0xffb454,
   },
+  {
+    key: 'ArrowsScene',
+    number: '012',
+    name: 'Arrows',
+    description: 'Tap an arrow with a clear run to the edge — it flies off the board',
+    color: 0xff7a5c,
+  },
 ]
 
 export class GameSelectScene extends Phaser.Scene {
