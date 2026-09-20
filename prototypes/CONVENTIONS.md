@@ -153,13 +153,43 @@ vfx.fadeTransition(duration = 400): void
 
 ## Level reload safety pattern
 
-When reloading a level inside a scene (not a full scene restart), cancel all in-flight timers and tweens **first**:
+When reloading a level inside a scene (not a full scene restart), cancel in-flight
+timers and tweens **first** — but do **not** use `tweens.killAll()`:
 
 ```typescript
 private loadLevel(): void {
-  this.tweens.killAll()        // kills in-flight tweens from previous level
+  // Kill only tweens on objects THIS scene owns and is about to destroy.
+  this.tweens.killTweensOf(this.myCubes)
+  this.tweens.killTweensOf(this.myShadows)
+
   this.time.removeAllEvents()  // cancels delayed callbacks from previous level
   // ... reset state and rebuild
+}
+```
+
+> **Why not `killAll()`.** Phaser's `TweenManager.killAll()` calls `tween.destroy()`
+> on every tween, and `destroy()` does **not** fire `onComplete`. `VFXManager.burst()`
+> and `floatingText()` destroy their GameObjects *only* in `onComplete`, and the scene
+> holds no reference to them. So a `killAll()` fired while a burst is mid-flight
+> strands those particles on screen permanently, with nothing able to clean them up.
+>
+> Kill tweens per owned object instead, and let transient VFX finish and self-clean —
+> it is short-lived by definition. Prototypes 004, 005 and 007 still use the old
+> `killAll()` form and can strand particles on a fast restart.
+
+Guard any delayed callback that touches an object which may be destroyed before it
+fires. A monotonic token is the cheapest way:
+
+```typescript
+private runToken = 0
+
+private loadLevel(): void {
+  this.runToken++                      // invalidates every pending callback
+  const token = this.runToken
+  this.time.delayedCall(300, () => {
+    if (token !== this.runToken) return  // stale — the level moved on
+    // ... safe to touch scene objects
+  })
 }
 ```
 

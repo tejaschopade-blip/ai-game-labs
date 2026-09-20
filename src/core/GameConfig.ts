@@ -14,12 +14,13 @@ import { SokobanScene } from '../../prototypes/007-sokoban-dna/SokobanScene'
 import { BlockPlacementScene } from '../../prototypes/008-block-placement/BlockPlacementScene'
 import { SortLabScene } from '../../prototypes/009-sort-lab/SortLabScene'
 import { CozyMazeScene } from '../../prototypes/010-cozy-maze/CozyMazeScene'
+import { LoopSortScene } from '../../prototypes/011-loop-sort/LoopSortScene'
 import { GameSelectScene } from '../scenes/GameSelectScene'
 
 export const GameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
   backgroundColor: DesignTokens.color.bg,
-  scene: [BootScene, PreloadScene, GameSelectScene, PrototypeScene, FoundationTestScene, RotationWorldScene, LaserMirrorScene, TimeEchoScene, ChainReactionScene, StealPropertiesScene, SokobanScene, BlockPlacementScene, SortLabScene, CozyMazeScene],
+  scene: [BootScene, PreloadScene, GameSelectScene, PrototypeScene, FoundationTestScene, RotationWorldScene, LaserMirrorScene, TimeEchoScene, ChainReactionScene, StealPropertiesScene, SokobanScene, BlockPlacementScene, SortLabScene, CozyMazeScene, LoopSortScene],
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
