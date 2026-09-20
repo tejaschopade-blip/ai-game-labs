@@ -107,6 +107,66 @@ export class Vfx {
     }
   }
 
+  /**
+   * Angular fragments that fly out and fall. Shattering ice, breaking crates —
+   * anything that should read as *broken* rather than *vanished*.
+   */
+  shards(x: number, y: number, o: BurstOptions = {}): void {
+    const color = o.color ?? this.t.colors.highlight
+    const n     = o.count ?? this.count(8, o.intensity)
+    const dist  = this.scaled(o.distance ?? 130)
+    const size  = this.scaled(o.size ?? 18)
+    const depth = o.depth ?? 1500
+
+    for (let i = 0; i < n; i++) {
+      const angle = (i / n) * Math.PI * 2 + Phaser.Math.FloatBetween(-0.3, 0.3)
+      const speed = dist * Phaser.Math.FloatBetween(0.55, 1.1)
+      const w = size * Phaser.Math.FloatBetween(0.45, 1)
+      const piece = this.scene.add
+        .triangle(x, y, 0, w, w, w * 0.55, w * 0.35, 0, color)
+        .setDepth(depth)
+        .setAngle(Phaser.Math.Between(0, 360))
+      this.scene.tweens.add({
+        targets: piece,
+        x: x + Math.cos(angle) * speed,
+        // Fragments have weight: they arc downward rather than flying straight.
+        y: y + Math.sin(angle) * speed * 0.6 + this.scaled(70),
+        angle: piece.angle + Phaser.Math.Between(-220, 220),
+        alpha: 0, scaleX: 0.4, scaleY: 0.4,
+        duration: o.duration ?? Phaser.Math.Between(420, 700),
+        ease: 'Quad.In',
+        onComplete: () => piece.destroy(),
+      })
+    }
+  }
+
+  /**
+   * Slow, soft motes that drift and fade. The quiet counterpart to `burst` —
+   * for settling, landing and "something just moved here".
+   */
+  dust(x: number, y: number, o: BurstOptions = {}): void {
+    const color = o.color ?? this.t.colors.highlight
+    const n     = o.count ?? this.count(5, o.intensity ?? 'small')
+    const dist  = this.scaled(o.distance ?? 60)
+    const size  = this.scaled(o.size ?? 9)
+    const depth = o.depth ?? 1400
+
+    for (let i = 0; i < n; i++) {
+      const angle = Math.PI + Phaser.Math.FloatBetween(-1.15, 1.15)
+      const p = this.scene.add.circle(x, y, size * Phaser.Math.FloatBetween(0.5, 1), color, 0.5)
+        .setDepth(depth)
+      this.scene.tweens.add({
+        targets: p,
+        x: x + Math.cos(angle) * dist * Phaser.Math.FloatBetween(0.6, 1.3),
+        y: y + Math.sin(angle) * dist * 0.45 - this.scaled(16),
+        alpha: 0, scaleX: 1.5, scaleY: 1.5,
+        duration: o.duration ?? Phaser.Math.Between(420, 700),
+        ease: this.t.ease.out,
+        onComplete: () => p.destroy(),
+      })
+    }
+  }
+
   /** Expanding fading ring. Reads as a pulse of energy leaving a point. */
   ring(x: number, y: number, radius = 40, o: BurstOptions = {}): void {
     const color = o.color ?? this.t.colors.primary

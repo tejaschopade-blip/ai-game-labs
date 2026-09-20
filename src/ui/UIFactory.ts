@@ -145,6 +145,25 @@ export interface BadgeOptions {
   landscape?: boolean
 }
 
+export interface DotsOptions {
+  x: number
+  y: number
+  count: number
+  /** How many dots are filled, from the left. */
+  active?: number
+  /** Diameter of a filled dot. Empty dots are drawn smaller. */
+  size?: number
+  gap?: number
+  color?: number
+  emptyColor?: number
+}
+
+export interface DotsHandle {
+  container: Phaser.GameObjects.Container
+  setActive(active: number): void
+  destroy(): void
+}
+
 export interface BadgeHandle {
   container: Phaser.GameObjects.Container
   setText(text: string): void
@@ -660,6 +679,43 @@ export class UIFactory {
       container,
       setText: (next: string) => { txt.setText(next); paint() },
       setColor: (next: number) => { color = next; paint() },
+      destroy: () => container.destroy(),
+    }
+  }
+
+  /**
+   * A row of progress dots. Reads as "three of five" at a glance without a
+   * number, which is what a level header wants — the count is context, not
+   * data the player has to parse.
+   */
+  createDots(opts: DotsOptions): DotsHandle {
+    const scene = this.scene
+    const th = this.theme
+    const size = opts.size ?? 18
+    const gap = opts.gap ?? 16
+    const color = opts.color ?? th.colors.primary
+    const empty = opts.emptyColor ?? th.colors.border
+    const step = size + gap
+    const startX = -((opts.count - 1) * step) / 2
+
+    const dots: Phaser.GameObjects.Arc[] = []
+    for (let i = 0; i < opts.count; i++) {
+      dots.push(scene.add.circle(startX + i * step, 0, size / 2, empty))
+    }
+    const container = scene.add.container(opts.x, opts.y, dots)
+
+    const paint = (active: number): void => {
+      dots.forEach((d, i) => {
+        const on = i < active
+        d.setFillStyle(on ? color : empty)
+        d.setScale(on ? 1 : 0.62)
+      })
+    }
+    paint(opts.active ?? 0)
+
+    return {
+      container,
+      setActive: (active: number) => paint(active),
       destroy: () => container.destroy(),
     }
   }

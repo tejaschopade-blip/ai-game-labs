@@ -74,49 +74,191 @@ Input is locked for the whole timeline. A 3-cube batch with one clear runs
 > cannot be anticipated. The fix is overlap, not speed — each step is ~55% of
 > its duration, so a cube is still settling as the next one launches.
 
-## Mobile presentation
+## Visual direction — "Soft Toy Factory"
 
-First prototype in the repo to run **portrait 1080×1920**, via Foundation V3's `applyPrototypeConfig()`. Everything before it is landscape 960×540 and is not retrofitted.
+> A small sorting machine built out of moulded plastic toy parts, sitting on a
+> warm paper desk.
 
-Built on the V4 presentation layer (`docs/presentation.md`) via
-`createPresentation(...)` with a `puzzle` theme recoloured to an amber accent —
-warm chrome for the machine, so none of the four cube colours is ever reused
-for UI.
+```
+cream paper ground  ·  pastel blue-grey machine  ·  saturated soft cubes
+```
 
-### The loop is a dashboard
+The machine is deliberately the **least saturated** thing on screen. Cubes are
+the only strongly coloured objects, which is what makes them read as the subject
+rather than as decoration. Every colour, radius, shadow and duration lives in
+`LoopSortTheme.ts`; nothing downstream picks a hex literal.
 
-Goals and remaining capacity live **inside the ring**, not stacked above it.
-They used to sit in a header while ~700px of the loop's interior stayed empty;
-both readouts describe the belt, so they belong at the belt, where the player is
-already looking.
+The foundation theme underneath is `cozy`, re-coloured — so panels, buttons,
+badges and shadows inherit the direction automatically.
 
-Remaining capacity is deliberately readable three ways, because the decision is
-often sparse and the squeeze is what supplies the tension:
+### Cubes
 
-1. **Empty sockets** drawn on the belt — spatial, no counting
-2. **An arc gauge** around the free count, filling as the belt does
-3. **An `N FREE` readout** that turns amber at 60% and red at 85%
+One function draws a cube, and nothing else is allowed to:
 
-### Belt
+```
+shadow → body → underside shade → top sheen → emblem → specular → rim
+```
 
-The track is drawn along the *dense* rounded-rect path rather than through the
-sampled slot centres, so its corners no longer bulge away from the cubes. Casing,
-recessed channel and treads that run **across** the lane (stubs along the rails
-read as a clock face). Slot 0 — the compaction target — is marked with a
-breathing amber intake chevron rather than a slightly-brighter outline.
+Each colour carries a moulded **emblem** (circle / square / triangle / diamond).
+It is redundant with hue on purpose: red-green is the common confusion, and a
+shape pressed into a toy block is both an accessibility affordance and a
+period-correct detail. Green leans teal for the same reason.
+
+### Presentation architecture
+
+```
+LoopSortTypes.ts     types + constants            ← zero Phaser
+LoopSortLogic.ts     belt, routing, matching      ← zero Phaser, runs under node
+LoopSortLevels.ts    20 handcrafted levels        ← zero Phaser
+LoopSortTheme.ts     design tokens                ← colours, motion, materials
+LoopSortVisuals.ts   pure draw functions          ← cube, slot, machine, card
+LoopSortScene.ts     composition, timing, juice
+```
+
+`LoopSortVisuals.ts` never touches a scene, a tween or game state — which is
+exactly what lets the scene bake all of it into textures. It builds on
+`src/presentation/Draw.ts` (rounded cards, layered shadows, sheens) rather than
+re-deriving them.
+
+**Prototype-scoped on purpose.** A conveyor made of toy parts is not a
+foundation concern (`docs/ai-rules.md` rules 2 and 5). What *was* genuinely
+reusable went the other way — see **Foundation changes** below.
+
+### Composition
+
+```
+LEVEL 7  ·  ● ● ● ○ ○  ·  goal chips     ← tertiary
+        ┌─────────────────────┐
+        │   conveyor + cubes  │          ← PRIMARY
+        │      (hub: free)    │
+        └─────────────────────┘
+          [ batch ] [ batch ]            ← secondary, thumb zone
+```
+
+Two deliberate deviations from a top-down reading of the brief:
+
+- **The batch tray stays at the bottom.** The brief's sketch puts it above the
+  board; the thumb zone is at the bottom of a 9:16 phone, and the tray is the
+  only thing the player ever touches.
+- **Goals are in the header, capacity is in the hub.** Goals are level state, so
+  they belong with the level number. Remaining capacity is *machine* state and
+  is the whole tension of the game, so it sits at the belt — which also stops
+  the loop's interior being ~700px of dead pixels.
+
+### Animation language
+
+| Moment | Motion |
+|---|---|
+| Card press | sinks 9px toward its shadow, scale 0.97, shadow compresses |
+| Card release | springs back on `Back.Out` |
+| Cube enters | arcs from the tapped card, scales up with overshoot |
+| Cube lands | squash-and-stretch, a puff of dust, settles |
+| Cube compacts | `Back.Out` slide, staggered 30ms per cube — a ripple, not a block |
+| Match | attract → hold → pop (see below) |
+| Obstacle | shudder → break → reveal, ~460ms, the slowest thing on screen |
+| Level complete | cubes hop in sequence, confetti, *then* the panel |
+
+Nothing bounces by default. Overshoot is used where an object has mass and
+settles; `Sine`/`Quad` where it does not.
+
+### The match
+
+The payoff is three beats, and the **animation** carries the information — the
+floating count is a confirmation, not the message:
+
+```
+attract    matched cubes lean into each other and swell        150ms
+hold       flashed white; nothing moves, the connection lands   95ms
+pop        burst in the cube's own colour, shrink out          260ms
+```
+
+Chain depth escalates burst size, camera punch and the floating label, and
+switches the audio slot from `match` to `chain`. It never escalates past the
+point where the board stops being readable.
+
+### Obstacle presentation
+
+Every obstacle is a physical object with a readable break.
+
+| Obstacle | Sequence |
+|---|---|
+| **Curtain** | roller shutter shudders, then rolls up slat by slat, dust |
+| **Ice** | frost cracks in two stages, then shatters into falling shards; the cube underneath squashes as it is freed |
+| **Barrier** | bolted gate shudders, sparks, retracts into the rails |
+| **Hidden** | crate shudders, then lifts away and tips — a discovery, so it pops upward rather than fading |
+
+Each carries an **unlock chip** — a cube face and a count — pushed outside the
+belt along the outward normal. On the left and right straights that would push
+it off-screen, so it drops below the slot instead; clamping alone slid it back
+on top of the thing it labels.
+
+### Interaction
+
+```
+IDLE → (pointerdown) PRESSED → (pointerup over card) RELEASE → batch flies
+                           └── (finger slides off) → IDLE
+```
+
+Cards use the foundation's `makePressable`, so `onPress` fires on **release over
+the target**, never on press — sliding off cancels. Hit areas are padded 18
+units beyond the visual. Mouse behaves identically for desktop testing.
+
+### Mobile layout
+
+Portrait 1080×1920 via `applyPrototypeConfig()`. Verified at 360×800, 390×844,
+412×915 and 1080×1920. Header, hub and tray are positioned from
+`layout.safeRect`, so notches and gesture bars never clip them.
 
 ### Performance
 
-Every static layer is baked (`bakeGraphics` / `bakeTexture`): track, sockets,
-intake mark, obstacles, goal chips. Cubes share **one texture per (colour,
-frozen)** pair plus one shadow texture, keyed by cube size and released with the
-level. Thirteen live `Graphics` re-tessellating a rounded rect, a sheen, a bevel
-and a frost overlay every frame is the thing that makes a portrait board crawl.
+Every static layer is baked (`bakeGraphics` / `bakeTexture`): machine, sockets,
+intake mark, hub plate, obstacles, goal chips, batch cards. Cubes share **one
+texture per colour** plus one shadow texture, keyed by cube size and released
+with the level. A cube costs seven fills to draw, and a Phaser `Graphics`
+re-tessellates its whole command list every frame — thirteen of those is the
+single most expensive thing a board like this can do.
+
+### Audio
+
+Semantic hooks only: `select`, `move`, `match`, `chain`, `destroy`, `complete`,
+`fail`. The repo ships no audio assets, so every call is a silent no-op; the
+call sites name the *event*, and what it sounds like is a property of the sound
+map, not of the scene.
 
 ### Playtesting
 
 `?lvl=12` opens level 13 directly. Twenty levels is a lot to replay to reach the
 one being tuned.
+
+## Foundation changes made for this prototype
+
+Discovered here, extracted because they are not Loop Sort-specific:
+
+| Addition | Why it is reusable |
+|---|---|
+| `anim.squash()` | impact feedback for anything that lands |
+| `anim.anticipate()` | wind-up before a committed action |
+| `vfx.shards()` | anything that should break rather than vanish |
+| `vfx.dust()` | soft settling motes |
+| `applyBackground({ light })` | baked radial bloom behind a play area |
+| `ui.createDots()` | "3 of 5" progress without a number |
+| `bakeTexture()` | one shared texture behind many identical objects |
+| `SoundSlot` + `move` / `match` / `chain` | semantic audio vocabulary |
+
+Kept prototype-local: the conveyor, cube and slot rendering, the belt geometry,
+the obstacle sequences, and every colour in the palette.
+
+## Known limitations
+
+- **Audio is hooks only.** No assets ship, so the feedback is silent.
+- **The match sequence lengthens a turn.** attract + hold + pop is ~500ms; a
+  long chain is a second of watching. That is the intent, but it is the first
+  thing to retune if playtesters find it slow.
+- **Levels 6–20 got composition and object quality but not bespoke tuning.**
+  The first five are the showcase.
+- **The hub competes slightly with the belt on small screens.** At 360×800 the
+  ring is tight and the free-count sits close to the cubes.
+- **No reduced-motion path.** Every animation always plays.
 
 ## Level progression
 
@@ -176,20 +318,25 @@ Every reachable state was classified by how many of its choices still keep a win
 
 The cause is structural: **ice is the only obstacle that removes space unconditionally and immediately.** Curtain and barrier withhold space the player did not yet need; hidden withholds information without costing anything.
 
-## Presentation changes vs. the previous build
+## Gameplay is untouched
 
-**No gameplay rule changed.** `LoopSortLogic.ts`, `LoopSortLevels.ts` and
-`LoopSortTypes.ts` are untouched; the scene still plays back `selectBatch()`'s
-event log and derives nothing from sprite positions. The timeline's *structure*
-— shift grouping, chain beats, run tokens, input lock — is unchanged. What
-changed is what is drawn, and how long each tween runs (see **Timeline**).
+`LoopSortLogic.ts`, `LoopSortLevels.ts` and `LoopSortTypes.ts` have **zero
+changes** across every presentation pass. The scene still plays back
+`selectBatch()`'s event log and derives nothing from sprite positions. The
+timeline's *structure* — shift grouping, chain beats, run tokens, input lock —
+is unchanged. What changed is what is drawn and how long each tween runs.
 
-Two bugs were found and fixed while rebuilding it:
+Bugs found and fixed while rebuilding the presentation:
 
 1. Baked belt layers were positioned at the texture's centre rather than at
-   `beltCentre`, putting every socket ~90px away from the slot its cubes land in.
+   `beltCentre`, putting every socket ~90px from the slot its cubes land in.
 2. The barrier gate was rotated along the lane instead of across it, so a wall
    read as a stick lying on the belt.
+3. A cube matched **while its entry tween was still in flight** was stranded on
+   the board forever: `anim.squash` kills in-flight tweens on its target, so the
+   insert's landing callback destroyed the clear animation that had already
+   taken the cube over. Travel tweens are now tracked on the view and handed to
+   the match, and landing feedback checks the cube is not already clearing.
 
 ## Playtest Observations
 

@@ -21,7 +21,8 @@ import { Theme, ThemeName, resolveTheme } from './Theme'
  */
 
 export type SoundSlot =
-  | 'click' | 'select' | 'success' | 'fail' | 'collect' | 'impact' | 'destroy' | 'complete'
+  | 'click' | 'select' | 'move' | 'match' | 'chain'
+  | 'success' | 'fail' | 'collect' | 'impact' | 'destroy' | 'complete'
 
 export type JuiceSounds = Partial<Record<SoundSlot, string>>
 

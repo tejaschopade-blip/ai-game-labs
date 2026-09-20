@@ -120,6 +120,50 @@ export class Anim {
     })
   }
 
+  /**
+   * Squash and stretch on impact: the object flattens along one axis and
+   * stretches along the other, then springs back. This is what makes a landing
+   * read as "it hit something" rather than "it stopped".
+   */
+  squash(target: Tweenable, amount = 0.14, o: AnimOptions = {}): void {
+    const g = v(target)
+    const baseX = g.scaleX || 1
+    const baseY = g.scaleY || 1
+    const a = amount * this.t.intensity
+    const d = o.duration ?? this.t.duration.fast
+    this.scene.tweens.killTweensOf(target)
+    this.scene.tweens.chain({
+      targets: target,
+      onComplete: () => { g.scaleX = baseX; g.scaleY = baseY; o.onComplete?.() },
+      tweens: [
+        { scaleX: baseX * (1 + a), scaleY: baseY * (1 - a), duration: d * 0.35, ease: this.t.ease.out },
+        { scaleX: baseX, scaleY: baseY, duration: d * 0.65, ease: this.t.ease.overshoot },
+      ],
+    })
+  }
+
+  /**
+   * Pulls back, then releases — the wind-up before a committed action. Runs
+   * `onComplete` at the moment of release, not at the end of the settle.
+   */
+  anticipate(target: Tweenable, amount = 0.1, o: AnimOptions = {}): void {
+    const g = v(target)
+    const baseX = g.scaleX || 1
+    const baseY = g.scaleY || 1
+    const d = o.duration ?? this.t.duration.fast
+    this.scene.tweens.killTweensOf(target)
+    this.scene.tweens.chain({
+      targets: target,
+      tweens: [
+        { scaleX: baseX * (1 - amount), scaleY: baseY * (1 - amount), duration: d * 0.6, ease: this.t.ease.out },
+        {
+          scaleX: baseX, scaleY: baseY, duration: d * 0.4, ease: this.t.ease.overshoot,
+          onStart: () => o.onComplete?.(),
+        },
+      ],
+    })
+  }
+
   /** Looping idle drift. Call `stop(target)` to end it. */
   float(target: Tweenable, amount = 8, duration = 2000): void {
     AnimHelper.float(this.scene, target, amount * this.t.intensity, duration)

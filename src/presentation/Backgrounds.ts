@@ -25,6 +25,15 @@ export interface BackgroundOptions {
   colorAlt?: number
   /** Edge darkening, 0..1. Defaults on for every preset except `solid`. */
   vignette?: number
+  /**
+   * Soft radial bloom behind the play area, 0..1. Lights the centre of the
+   * frame so the board sits in a pool of light — the cheapest way to make a
+   * background feel composed rather than filled.
+   */
+  light?: number
+  /** Where the bloom sits, as a fraction of height. Default 0.46. */
+  lightY?: number
+  lightColor?: number
   /** Ambient drifting motes. Defaults to 0 — they compete with gameplay. */
   particles?: number
   patternAlpha?: number
@@ -103,6 +112,15 @@ export function applyBackground(
     extra.push(drawWaves(scene, W, H, ink, depth + 1))
   }
 
+  const bloom = opts.light ?? 0
+  if (bloom > 0) {
+    extra.push(drawLight(
+      scene, W, H, bloom,
+      opts.lightColor ?? (light ? 0xffffff : t.colors.highlight),
+      opts.lightY ?? 0.46, depth + 2,
+    ))
+  }
+
   const vig = opts.vignette ?? (preset === 'solid' ? 0 : 0.3)
   if (vig > 0) extra.push(drawVignette(scene, W, H, vig, light ? shade(base, -0.4) : 0x000000, depth + 3))
 
@@ -122,6 +140,28 @@ export function applyBackground(
 function isLight(color: number): boolean {
   const c = Phaser.Display.Color.IntegerToColor(color)
   return (c.red * 0.299 + c.green * 0.587 + c.blue * 0.114) > 140
+}
+
+/**
+ * Radial bloom, approximated by stacked circles of falling alpha and baked into
+ * a texture. Phaser Graphics has no radial gradient, and 18 concentric fills
+ * replayed every frame would be absurd — but baked once it is a single quad.
+ */
+function drawLight(
+  scene: Phaser.Scene,
+  W: number, H: number,
+  strength: number, color: number, yFrac: number, depth: number,
+): Phaser.GameObjects.Image {
+  const radius = Math.round(Math.max(W, H) * 0.62)
+  const steps = 18
+  return bakeGraphics(scene, radius * 2, radius * 2, (g, w, h) => {
+    for (let i = steps; i >= 1; i--) {
+      const f = i / steps
+      // Quadratic falloff reads as light; linear reads as a flat disc.
+      g.fillStyle(color, (strength / steps) * (1 - f) * 2.2)
+      g.fillCircle(w / 2, h / 2, radius * f)
+    }
+  }).setPosition(W / 2, H * yFrac).setDepth(depth)
 }
 
 /** Four edge gradients. Cheaper and more portable than a radial mask. */

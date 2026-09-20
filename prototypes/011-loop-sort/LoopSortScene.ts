@@ -4,21 +4,23 @@
 // never inspects sprite positions to decide anything: selectBatch() returns an
 // ordered ResolveEvent[] and this file plays that list back as a timeline.
 //
-// Portrait 1080x1920 via Foundation V3's applyPrototypeConfig(), and built on
-// the V4 presentation layer (docs/presentation.md). No gameplay rule, timing
-// contract or event semantic below differs from the previous version except the
-// animation DURATIONS, which are called out where they are defined.
+// Visual direction: "Soft Toy Factory" — a small moulded-plastic sorting
+// machine on a warm paper desk. All tokens live in LoopSortTheme.ts, all
+// drawing in LoopSortVisuals.ts; this file owns composition, timing and juice.
+//
+// Portrait 1080x1920 via Foundation V3's applyPrototypeConfig().
 
 import Phaser from 'phaser'
 
 import { applyPrototypeConfig } from '../../src/core/PrototypeConfig'
 import { fadeIn } from '../../src/systems/Transitions'
 import { DebugOverlay } from '../../src/ui/DebugOverlay'
-import type { ButtonHandle, PanelHandle } from '../../src/ui/UIFactory'
+import type { ButtonHandle, PanelHandle, DotsHandle } from '../../src/ui/UIFactory'
 import {
-  createPresentation, customizeTheme, type Presentation, type Theme,
-  drawRoundedCard, drawGameTile, drawShadow, drawPill, drawHighlight,
-  bakeGraphics, bakeTexture, hex, shade, mix,
+  createPresentation, type Presentation, type Theme,
+  drawRoundedCard, drawShadow, drawPill,
+  bakeGraphics, bakeTexture, makePressable, type PressableHandle,
+  hex, mix,
 } from '../../src/presentation'
 
 import { LEVELS } from './LoopSortLevels'
@@ -28,59 +30,74 @@ import {
 import type {
   CubeColor, GameState, ResolveEvent, Obstacle,
 } from './LoopSortTypes'
+import {
+  loopSortTheme, CUBE_SKIN, MACHINE, GROUND, STATUS, OBSTACLE, MOTION,
+} from './LoopSortTheme'
+import {
+  drawToyCube, drawIceShell, drawConveyor, drawSlotWell, drawChevron,
+  drawBatchCard, drawTray, walkPath, type Point,
+} from './LoopSortVisuals'
 
-// ── Tuning ────────────────────────────────────────────────────────────────────
+// ── Timeline ──────────────────────────────────────────────────────────────────
 //
-// How long each tween runs. The previous version had these at 2–10ms, which
-// made every cube teleport — and "WATCH → ANTICIPATE" is half the hypothesis
-// this prototype exists to test. They are back to watchable values.
+// Two numbers per event: how long its tween runs, and how far the timeline
+// advances before the NEXT event fires. The second is ~55% of the first, so
+// motion overlaps instead of queueing. A 3-cube batch with one clear runs about
+// 1.3s end to end, with input locked throughout.
 //
-// The reason they were cut is real, though: advancing the timeline by the full
-// duration queues every event end-to-end and locks input for seconds. The fix
-// is overlap, not speed. Each *_STEP below is how far the timeline advances
-// before the NEXT event fires, and is deliberately ~55% of its duration, so
-// a cube is still settling as the next one launches. A 3-cube batch with one
-// clear runs ~1.1s end to end.
-const INSERT_MS   = 300
-const SHIFT_MS    = 230
-const CLEAR_MS    = 300
-const OBSTACLE_MS = 420
+// (An earlier build ran these at 2-10ms, which removed the animation entirely.
+// WATCH -> ANTICIPATE is half this prototype's hypothesis; the fix for a long
+// input lock is overlap, not speed.)
+const INSERT_MS   = MOTION.enter
+const SHIFT_MS    = MOTION.slide
+const OBSTACLE_MS = MOTION.obstacle
+/** attract -> hold -> pop, played as one chain per matched cube. */
+const CLEAR_MS    = MOTION.attract + MOTION.anticipate + MOTION.clear
 
-const INSERT_STEP   = 165
-const SHIFT_STEP    = 125
-const CLEAR_STEP    = 155
-const OBSTACLE_STEP = 230
-const CHAIN_BEAT    = 165
-const TAIL_MS       = 130
-
-const CUBE_FILL: Record<CubeColor, number> = {
-  red:    0xff5566,
-  blue:   0x4a90ff,
-  green:  0x3ddc84,
-  yellow: 0xffc53d,
-}
+const INSERT_STEP   = 175
+const SHIFT_STEP    = 130
+const CLEAR_STEP    = 235
+const OBSTACLE_STEP = 250
+const CHAIN_BEAT    = 180
+const TAIL_MS       = 150
 
 const DEPTH = {
-  track:    0,
-  socket:   1,
-  dash:     2,
-  shadow:   3,
-  cube:     4,
-  obstacle: 6,
-  hud:      10,
+  ground:   -5,
+  track:     0,
+  socket:    1,
+  hub:       2,
+  chevron:   3,
+  shadow:    4,
+  cube:      5,
+  obstacle:  8,
+  tray:      9,
+  hud:      12,
   panel:    100,
 }
-
-interface Point { x: number; y: number }
 
 interface CubeView {
   g: Phaser.GameObjects.Image
   shadow: Phaser.GameObjects.Image
   color: CubeColor
+  frost?: Phaser.GameObjects.Image
+  /**
+   * The cube's current travel tween. Tracked because an insert drives position
+   * from a proxy rather than from the image, so `killTweensOf(image)` cannot
+   * reach it — and a cube can be matched while it is still in the air.
+   */
+  moveTween?: Phaser.Tweens.Tween
 }
 
 interface ObstacleView {
   parts: Phaser.GameObjects.GameObject[]
+}
+
+interface BatchCardView {
+  container: Phaser.GameObjects.Container
+  idle: Phaser.GameObjects.Image
+  pressed: Phaser.GameObjects.Image
+  press: PressableHandle
+  restY: number
 }
 
 // ── Belt geometry ─────────────────────────────────────────────────────────────
@@ -88,18 +105,17 @@ interface ObstacleView {
 interface BeltPath {
   /** `count` slot centres, evenly spaced by arc length, slot 0 at top-centre. */
   slots: Point[]
-  /** The dense path the slots were sampled from — used to draw the track. */
+  /** The dense path the slots were sampled from — used to draw the machine. */
   path: Point[]
 }
 
 /**
  * Points spaced by arc length around a rounded rectangle, starting at
- * top-centre and running clockwise. Slot 0 therefore sits at top-centre, which
- * matters because slot 0 is the compaction target.
+ * top-centre and running clockwise. Slot 0 sits at top-centre because slot 0 is
+ * the compaction target.
  *
- * Now also returns the dense path. Stroking the track through the *slot*
- * centres drew a coarse polygon whose corners bulged away from the cubes; the
- * track is drawn along this path instead.
+ * The dense path is returned too: stroking the machine through the *slot*
+ * centres draws a coarse polygon whose corners bulge away from the cubes.
  */
 function beltPoints(
   cx: number, cy: number, w: number, h: number, r: number, count: number,
@@ -117,7 +133,7 @@ function beltPoints(
     }
   }
   const arc = (ax: number, ay: number, a0: number, a1: number): void => {
-    const steps = 14
+    const steps = 16
     for (let i = 0; i <= steps; i++) {
       const a = a0 + (a1 - a0) * (i / steps)
       path.push({ x: ax + Math.cos(a) * rad, y: ay + Math.sin(a) * rad })
@@ -135,7 +151,6 @@ function beltPoints(
   arc(cx - hw + rad, cy - hh + rad, Math.PI, Math.PI * 1.5)
   line(cx - hw + rad, cy - hh, cx, cy - hh)
 
-  // Cumulative arc length, then sample `count` evenly spaced points.
   const cum: number[] = [0]
   for (let i = 1; i < path.length; i++) {
     cum.push(cum[i - 1] + Phaser.Math.Distance.BetweenPoints(path[i - 1], path[i]))
@@ -156,30 +171,6 @@ function beltPoints(
   return { slots, path }
 }
 
-/** Walks a dense path at fixed arc-length intervals, yielding point + normal. */
-function walkPath(
-  path: Point[], spacing: number,
-  fn: (p: Point, nx: number, ny: number) => void,
-): void {
-  let carry = 0
-  for (let i = 1; i < path.length; i++) {
-    const a = path[i - 1]
-    const b = path[i]
-    const dx = b.x - a.x
-    const dy = b.y - a.y
-    const len = Math.hypot(dx, dy)
-    if (len < 0.0001) continue
-    const ux = dx / len
-    const uy = dy / len
-    let d = carry
-    while (d < len) {
-      fn({ x: a.x + ux * d, y: a.y + uy * d }, -uy, ux)
-      d += spacing
-    }
-    carry = d - len
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class LoopSortScene extends Phaser.Scene {
@@ -195,24 +186,27 @@ export class LoopSortScene extends Phaser.Scene {
   private beltPath: Point[] = []
   private cubeSize = 120
   private beltCentre: Point = { x: 0, y: 0 }
+  private trayY = 0
 
   // view objects
   private trackImg?: Phaser.GameObjects.Image
   private socketImg?: Phaser.GameObjects.Image
   private intakeMark?: Phaser.GameObjects.Image
+  private chevrons: Phaser.GameObjects.Image[] = []
   private cubeViews = new Map<string, CubeView>()
   /** Views mid-clear: already out of cubeViews but not yet destroyed. */
   private dyingViews = new Set<CubeView>()
   private obstacleViews = new Map<string, ObstacleView>()
-  private batchButtons: ButtonHandle[] = []
+  private batchCards: BatchCardView[] = []
   private trayLabel?: Phaser.GameObjects.Text
+  private trayPlate?: Phaser.GameObjects.Image
   private hud: Phaser.GameObjects.GameObject[] = []
-  private dash: Phaser.GameObjects.GameObject[] = []
+  private hubParts: Phaser.GameObjects.GameObject[] = []
+  private levelDots?: DotsHandle
+  private goalChips: Array<{ bg: Phaser.GameObjects.Image; text: Phaser.GameObjects.Text; color: CubeColor }> = []
   private gaugeG?: Phaser.GameObjects.Graphics
   private freeNumber?: Phaser.GameObjects.Text
-  private freeCaption?: Phaser.GameObjects.Text
   private beltCaption?: Phaser.GameObjects.Text
-  private goalChips: Array<{ bg: Phaser.GameObjects.Image; text: Phaser.GameObjects.Text; color: CubeColor }> = []
   private panel?: PanelHandle
   private panelButtons: ButtonHandle[] = []
   private panelExtras: Phaser.GameObjects.GameObject[] = []
@@ -240,19 +234,23 @@ export class LoopSortScene extends Phaser.Scene {
       orientation: 'portrait',
     })
 
-    // Amber accent on the dark puzzle base: this is a sorting machine, and the
-    // warm signal colour separates machinery from the four cube colours, none
-    // of which may be reused for chrome.
     this.p = createPresentation(this, {
-      theme: customizeTheme('puzzle', {
-        colors: {
-          ...customizeTheme('puzzle', {}).colors,
-          accent: 0xffb454,
-          background: 0x0e1120,
-          backgroundAlt: 0x1b2138,
-        },
-      }),
-      background: { preset: 'softGradient', vignette: 0.32, patternSpacing: 110 },
+      theme: loopSortTheme(),
+      // Warm paper with a soft pool of light where the machine sits. The
+      // vignette is low because the ground is light; its job is to stop the
+      // frame reading as an infinite sheet, not to darken the corners.
+      background: {
+        preset: 'paper',
+        patternSpacing: 64,
+        patternAlpha: 0.045,
+        light: 0.5,
+        lightY: 0.47,
+        vignette: 0.16,
+      },
+      sounds: {
+        select: 'ls_select', move: 'ls_move', match: 'ls_match', chain: 'ls_chain',
+        destroy: 'ls_obstacle', complete: 'ls_success', fail: 'ls_fail',
+      },
     })
     this.t = this.p.theme
 
@@ -271,14 +269,9 @@ export class LoopSortScene extends Phaser.Scene {
     fadeIn(this, this.t.duration.normal)
   }
 
-  update(): void {
-    this.overlay.update()
-  }
-
   /**
    * Playtest affordance: `?lvl=12` opens level 13 directly. Twenty levels is a
-   * lot to replay to reach the one being tuned, and this costs one line. Any
-   * missing or malformed value starts at level 1.
+   * lot to replay to reach the one being tuned, and this costs one line.
    */
   private startLevelIndex(): number {
     try {
@@ -290,9 +283,18 @@ export class LoopSortScene extends Phaser.Scene {
     }
   }
 
+  update(): void {
+    this.overlay.update()
+  }
+
   private teardown(): void {
     this.clearLevel()
     // createPresentation registers its own SHUTDOWN cleanup for the background.
+  }
+
+  /** Semantic audio. No assets ship, so every call is a silent no-op today. */
+  private sfx(slot: 'select' | 'move' | 'match' | 'chain' | 'destroy' | 'complete' | 'fail'): void {
+    this.p.juice.play(slot)
   }
 
   // ── Level construction ──────────────────────────────────────────────────────
@@ -307,26 +309,25 @@ export class LoopSortScene extends Phaser.Scene {
     this.lastFreeShown = -1
 
     this.computeGeometry()
-    this.drawTrack()
+    this.drawMachine()
     this.drawSockets()
+    this.buildHub()
     this.buildObstacles()
     this.spawnInitialCubes()
     this.buildHeader()
-    this.buildDashboard()
     this.buildBatchTray()
     this.refreshReadouts()
   }
 
   /**
-   * Cancels every pending callback and destroys everything this scene created
-   * for the current level. runToken is bumped first so any callback already
-   * dequeued this frame becomes a no-op.
+   * Cancels every pending callback and destroys everything built for the
+   * current level. runToken is bumped first so any callback already dequeued
+   * this frame becomes a no-op.
    *
    * Deliberately does NOT call tweens.killAll(): that destroys tweens without
-   * firing onComplete, which would strand the presentation layer's burst
-   * particles and floating text on the display list (their cleanup lives in
-   * onComplete, and this scene has no handle on them). Tweens are killed per
-   * owned object instead, and transient VFX is left to finish and clean itself.
+   * firing onComplete, stranding the presentation layer's particles on the
+   * display list. Tweens are killed per owned object instead, and transient VFX
+   * is left to finish and clean itself up.
    */
   private clearLevel(): void {
     this.runToken++
@@ -339,12 +340,11 @@ export class LoopSortScene extends Phaser.Scene {
         this.tweens.killTweensOf(v.shadow)
         v.g.destroy()
         v.shadow.destroy()
+        if (v.frost) { this.tweens.killTweensOf(v.frost); v.frost.destroy() }
       }
     }
     killViews(this.cubeViews.values())
     this.cubeViews.clear()
-    // Views mid-clear are already out of cubeViews; their destroy lives in a
-    // tween onComplete that will never fire once the tween is killed.
     killViews(this.dyingViews)
     this.dyingViews.clear()
 
@@ -354,32 +354,28 @@ export class LoopSortScene extends Phaser.Scene {
     }
     this.obstacleViews.clear()
 
-    this.trackImg?.destroy();   this.trackImg = undefined
-    this.socketImg?.destroy();  this.socketImg = undefined
+    this.trackImg?.destroy();  this.trackImg = undefined
+    this.socketImg?.destroy(); this.socketImg = undefined
     if (this.intakeMark) {
       this.tweens.killTweensOf(this.intakeMark)
       this.intakeMark.destroy()
       this.intakeMark = undefined
     }
+    for (const c of this.chevrons) { this.tweens.killTweensOf(c); c.destroy() }
+    this.chevrons = []
 
     this.destroyBatchTray()
 
-    for (const h of this.hud) {
-      this.tweens.killTweensOf(h)
-      h.destroy()
-    }
+    for (const h of this.hud) { this.tweens.killTweensOf(h); h.destroy() }
     this.hud = []
+    for (const h of this.hubParts) { this.tweens.killTweensOf(h); h.destroy() }
+    this.hubParts = []
 
-    for (const d of this.dash) {
-      this.tweens.killTweensOf(d)
-      d.destroy()
-    }
-    this.dash = []
+    this.levelDots?.destroy(); this.levelDots = undefined
+    this.goalChips = []
     this.gaugeG = undefined
     this.freeNumber = undefined
-    this.freeCaption = undefined
     this.beltCaption = undefined
-    this.goalChips = []
 
     // Shared cube/shadow textures are keyed by size, which changes with the
     // level's capacity, so they are released with the level that made them.
@@ -392,13 +388,14 @@ export class LoopSortScene extends Phaser.Scene {
   }
 
   private destroyBatchTray(): void {
-    for (const b of this.batchButtons) {
-      this.tweens.killTweensOf(b.container)
-      b.destroy()
+    for (const c of this.batchCards) {
+      this.tweens.killTweensOf(c.container)
+      c.press.destroy()
+      c.container.destroy()
     }
-    this.batchButtons = []
-    this.trayLabel?.destroy()
-    this.trayLabel = undefined
+    this.batchCards = []
+    this.trayLabel?.destroy();  this.trayLabel = undefined
+    this.trayPlate?.destroy();  this.trayPlate = undefined
   }
 
   private dismissPanel(): void {
@@ -419,20 +416,22 @@ export class LoopSortScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Composition: header (level + goals) / machine / tray. The machine gets the
+   * largest share of the frame — it is the only thing the player reads
+   * continuously, and the HUD is deliberately not allowed to grow into it.
+   */
   private computeGeometry(): void {
     const safe = this.p.layout.safeRect
-    // The header shrank: goals and capacity moved inside the loop, which is
-    // where the player is already looking and was ~700px of dead pixels.
-    const hudH  = 250
-    const trayH = 430
+    const headerH = 300
+    const trayH   = 400
 
-    const top = safe.y + hudH
+    const top = safe.y + headerH
     const bottom = safe.y + safe.height - trayH
-    const availW = safe.width
-    const availH = Math.max(bottom - top, 400)
+    const availH = Math.max(bottom - top, 420)
 
-    const w = Math.min(availW - 170, 830)
-    const h = Math.min(availH - 120, 830)
+    const w = Math.min(safe.width - 120, 880)
+    const h = Math.min(availH - 90, 880)
     this.beltCentre = { x: this.p.layout.width / 2, y: top + availH / 2 }
 
     const belt = beltPoints(
@@ -442,27 +441,20 @@ export class LoopSortScene extends Phaser.Scene {
     this.slots = belt.slots
     this.beltPath = belt.path
 
-    // Cube size from the gap between neighbouring slots, so a long belt packs
-    // tighter instead of overlapping.
     const gap = this.slots.length > 1
       ? Phaser.Math.Distance.BetweenPoints(this.slots[0], this.slots[1])
       : 160
     this.cubeSize = Math.round(Phaser.Math.Clamp(gap * 0.6, 58, 126))
-    this.spawnFrom = { x: this.p.layout.width / 2, y: safe.y + safe.height - trayH * 0.5 }
+
+    this.trayY = safe.y + safe.height - 182
+    this.spawnFrom = { x: this.p.layout.width / 2, y: this.trayY }
   }
 
-  // ── Track ───────────────────────────────────────────────────────────────────
-
   /**
-   * The conveyor itself: casing, recessed channel, and tread ticks running
-   * along it. Baked — it is completely static, and a 400-point path stroked
-   * three times would otherwise re-tessellate every frame.
-   */
-  /**
-   * Size of the square canvas the belt layers bake into, and the offset that
-   * puts the belt at its centre. The baked Image is then positioned at
-   * `beltCentre`, so texture-centre lands on belt-centre and every slot sits
-   * exactly where `this.slots` says it does.
+   * Square canvas the belt layers bake into, plus the offset that puts the belt
+   * at its centre. The Image is then positioned at `beltCentre`, so
+   * texture-centre lands on belt-centre and every slot sits exactly where
+   * `this.slots` says it does.
    */
   private beltBakeBox(): { box: number; dx: number; dy: number } {
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
@@ -472,92 +464,86 @@ export class LoopSortScene extends Phaser.Scene {
       if (p.y < minY) minY = p.y
       if (p.y > maxY) maxY = p.y
     }
-    const pad = this.cubeSize + 90
+    const pad = this.cubeSize + 110
     const box = Math.ceil(Math.max(maxX - minX, maxY - minY) + pad * 2)
     return { box, dx: box / 2 - this.beltCentre.x, dy: box / 2 - this.beltCentre.y }
   }
 
-  private drawTrack(): void {
-    const t = this.t
-    const s = this.cubeSize
+  private drawMachine(): void {
     const { box, dx, dy } = this.beltBakeBox()
-
-    const stroke = (
-      g: Phaser.GameObjects.Graphics, dx: number, dy: number,
-      width: number, color: number, alpha: number,
-    ): void => {
-      g.lineStyle(width, color, alpha)
-      g.beginPath()
-      g.moveTo(this.beltPath[0].x + dx, this.beltPath[0].y + dy)
-      for (let i = 1; i < this.beltPath.length; i++) {
-        g.lineTo(this.beltPath[i].x + dx, this.beltPath[i].y + dy)
-      }
-      g.closePath()
-      g.strokePath()
-    }
-
     this.trackImg = bakeGraphics(this, box, box, g => {
-      // Drop shadow under the casing, then casing, then recessed channel.
-      const casing  = s + 30
-      const channel = s + 14
-      stroke(g, dx, dy + 8, casing, 0x000000, 0.26)
-      stroke(g, dx, dy, casing, mix(t.colors.background, t.colors.surface, 0.9), 1)
-      stroke(g, dx, dy - 2, casing - 6, shade(t.colors.surface, 0.04), 1)
-      stroke(g, dx, dy, channel, shade(t.colors.background, 0.015), 1)
-
-      // Treads run ACROSS the channel. Two stubs hugging the rails read as a
-      // clock face; a crossing line reads as belt surface.
-      const half = channel / 2 - 3
-      g.lineStyle(4, t.colors.border, 0.18)
-      walkPath(this.beltPath, 44, (p, nx, ny) => {
-        g.lineBetween(
-          p.x + dx - nx * half, p.y + dy - ny * half,
-          p.x + dx + nx * half, p.y + dy + ny * half,
-        )
-      })
+      drawConveyor(g, this.beltPath, dx, dy, this.cubeSize)
     }).setPosition(this.beltCentre.x, this.beltCentre.y).setDepth(DEPTH.track)
+
+    this.buildChevrons()
   }
 
   /**
-   * Empty slot sockets. This is the level's core planning information — the
-   * player must be able to see remaining space without counting cubes, so an
-   * empty socket is drawn as a recessed well with inverted lighting.
+   * Flow indicators: a handful of chevrons along the belt whose opacity runs
+   * around the loop in sequence. Nothing moves, so it costs one tween each —
+   * but the eye reads direction, which is the one thing a static ring cannot
+   * say on its own.
    */
+  private buildChevrons(): void {
+    const size = Math.round(this.cubeSize * 0.34)
+    const key = bakeTexture(this, `ls_chevron_${size}`, size * 1.6, size * 1.6, (g, w, h) => {
+      drawChevron(g, w / 2, h / 2, size, MACHINE.casingLight, 1)
+    })
+    this.ownedTextures.add(key)
+
+    // Sample the path finely once, then pick the point midway between each pair
+    // of slots. Placing chevrons by raw arc length lands them on top of the
+    // slots, where they read as marks on the cubes rather than as flow.
+    const samples: Array<{ p: Point; a: number; d: number }> = []
+    walkPath(this.beltPath, 5, (p, nx, ny, dist) => {
+      // (nx, ny) is the normal; travel direction is (ny, -nx).
+      samples.push({ p, a: Math.atan2(-nx, ny), d: dist })
+    })
+    if (samples.length === 0) return
+    const total = samples[samples.length - 1].d
+    const count = this.slots.length
+
+    for (let i = 0; i < count; i++) {
+      const want = ((i + 0.5) / count) * total
+      let best = samples[0]
+      let bestGap = Infinity
+      for (const s of samples) {
+        const gap = Math.abs(s.d - want)
+        if (gap < bestGap) { bestGap = gap; best = s }
+      }
+      const img = this.add.image(best.p.x, best.p.y, key)
+        .setRotation(best.a)
+        .setDepth(DEPTH.chevron)
+        .setAlpha(0.1)
+      this.tweens.add({
+        targets: img,
+        alpha: 0.3,
+        duration: 400,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.InOut',
+        delay: (i / count) * 1800,
+      })
+      this.chevrons.push(img)
+    }
+  }
+
   private drawSockets(): void {
     if (this.socketImg) { this.socketImg.destroy(); this.socketImg = undefined }
-    const t = this.t
     const s = this.cubeSize
-    const r = t.radius.md
     const { box, dx, dy } = this.beltBakeBox()
 
     this.socketImg = bakeGraphics(this, box, box, g => {
       for (let i = 0; i < this.slots.length; i++) {
         const p = this.slots[i]
-        const x = p.x + dx
-        const y = p.y + dy
-        const blocked = this.isCurtainedView(i)
-
-        g.fillStyle(blocked ? shade(t.colors.background, -0.02) : shade(t.colors.background, 0.02), 1)
-        g.fillRoundedRect(x - s / 2, y - s / 2, s, s, r)
-        // Dark top / lit bottom — the inverse of a raised cube, so an empty
-        // socket never reads as a piece.
-        g.fillStyle(0x000000, blocked ? 0.22 : 0.13)
-        g.fillRoundedRect(x - s / 2, y - s / 2, s, s * 0.3, { tl: r, tr: r, bl: 0, br: 0 })
-        g.fillStyle(t.colors.highlight, blocked ? 0.015 : 0.035)
-        g.fillRoundedRect(x - s / 2, y + s / 2 - s * 0.16, s, s * 0.16, { tl: 0, tr: 0, bl: r, br: r })
-        g.lineStyle(3, blocked ? shade(t.colors.border, -0.08) : t.colors.border, blocked ? 0.45 : 0.7)
-        g.strokeRoundedRect(x - s / 2, y - s / 2, s, s, r)
+        drawSlotWell(g, p.x + dx, p.y + dy, s, this.isCurtainedView(i))
       }
     }).setPosition(this.beltCentre.x, this.beltCentre.y).setDepth(DEPTH.socket)
 
     this.drawIntakeMark()
   }
 
-  /**
-   * Slot 0 is the compaction target — everything slides toward it — but the
-   * previous build marked it with a slightly brighter outline that read as
-   * noise. It gets a labelled intake chevron that breathes instead.
-   */
+  /** Slot 0 is the compaction target. It gets a labelled, breathing intake. */
   private drawIntakeMark(): void {
     if (this.intakeMark) {
       this.tweens.killTweensOf(this.intakeMark)
@@ -566,22 +552,20 @@ export class LoopSortScene extends Phaser.Scene {
     }
     const p = this.slots[0]
     if (!p) return
-    const t = this.t
     const s = this.cubeSize
-    const box = s + 70
+    const box = s + 96
 
-    this.intakeMark = bakeGraphics(this, box, box + 60, (g, w, h) => {
+    this.intakeMark = bakeGraphics(this, box, box + 70, (g, w, h) => {
       const cx = w / 2
-      const cy = h / 2 + 30
-      g.lineStyle(4, t.colors.accent, 0.55)
-      g.strokeRoundedRect(cx - s / 2 - 9, cy - s / 2 - 9, s + 18, s + 18, t.radius.md + 6)
-      // Chevron pointing into the slot.
-      g.fillStyle(t.colors.accent, 0.9)
-      const ay = cy - s / 2 - 30
-      g.fillTriangle(cx, ay + 16, cx - 17, ay - 8, cx + 17, ay - 8)
-    }).setPosition(p.x, p.y - 30).setDepth(DEPTH.socket)
+      const cy = h / 2 + 35
+      g.lineStyle(6, MACHINE.accent, 0.55)
+      g.strokeRoundedRect(cx - s / 2 - 12, cy - s / 2 - 12, s + 24, s + 24, s * 0.27 + 10)
+      g.fillStyle(MACHINE.accent, 0.95)
+      const ay = cy - s / 2 - 36
+      g.fillTriangle(cx, ay + 18, cx - 19, ay - 9, cx + 19, ay - 9)
+    }).setPosition(p.x, p.y - 35).setDepth(DEPTH.socket)
 
-    this.p.anim.pulse(this.intakeMark, 1.04, 1500)
+    this.p.anim.pulse(this.intakeMark, 1.05, 1600)
   }
 
   private isCurtainedView(slot: number): boolean {
@@ -589,35 +573,222 @@ export class LoopSortScene extends Phaser.Scene {
       o.kind === 'curtain' && !this.openCurtains.has(o.id) && slot >= o.from && slot <= o.to)
   }
 
+  // ── Hub ─────────────────────────────────────────────────────────────────────
+
+  /**
+   * The centre of the loop: a moulded plate carrying the one readout that is
+   * genuinely about the belt — how much room is left. Goals live in the header
+   * (they are level state, not machine state), so the hub stays quiet and the
+   * cubes keep the eye.
+   */
+  private buildHub(): void {
+    const c = this.beltCentre
+    const inner = Math.min(
+      Math.abs(this.slots[0].y - c.y),
+      Math.abs(this.slots[Math.floor(this.slots.length / 4)].x - c.x),
+    ) - this.cubeSize / 2 - 46
+    const radius = Math.max(140, Math.min(196, inner))
+
+    const plate = bakeGraphics(this, radius * 2 + 40, radius * 2 + 40, (g, w, h) => {
+      const x = w / 2
+      const y = h / 2
+      g.fillStyle(0x6b5a42, 0.05)
+      g.fillCircle(x, y + 7, radius)
+      g.fillStyle(MACHINE.casingLight, 0.5)
+      g.fillCircle(x, y, radius)
+      g.fillStyle(0xffffff, 0.35)
+      g.fillCircle(x, y - 4, radius - 9)
+      g.lineStyle(3, MACHINE.casingDark, 0.28)
+      g.strokeCircle(x, y, radius)
+      // Bolt heads at the quarters — a moulded part, not a disc.
+      g.fillStyle(MACHINE.casingDark, 0.22)
+      for (let i = 0; i < 4; i++) {
+        const a = Math.PI / 4 + i * Math.PI / 2
+        g.fillCircle(x + Math.cos(a) * (radius - 24), y + Math.sin(a) * (radius - 24), 7)
+      }
+    }).setPosition(c.x, c.y).setDepth(DEPTH.hub)
+    this.hubParts.push(plate)
+
+    this.gaugeG = this.add.graphics().setDepth(DEPTH.hub + 1)
+    this.hubParts.push(this.gaugeG)
+
+    this.freeNumber = this.add.text(c.x, c.y - 10, '0',
+      this.p.text('heading', GROUND.ink)).setOrigin(0.5).setDepth(DEPTH.hub + 2)
+    this.hubParts.push(this.freeNumber)
+
+    const cap = this.add.text(c.x, c.y + 44, 'FREE',
+      this.p.text('caption', GROUND.inkSoft)).setOrigin(0.5).setDepth(DEPTH.hub + 2)
+    this.hubParts.push(cap)
+
+    this.beltCaption = this.add.text(c.x, c.y + 150, '',
+      this.p.text('caption', mix(GROUND.inkSoft, GROUND.paper, 0.35)))
+      .setOrigin(0.5).setDepth(DEPTH.hub + 2)
+    this.hubParts.push(this.beltCaption)
+  }
+
+  /** Amber at 60% full, red at 85% — unchanged thresholds, new presentation. */
+  private pressureColor(ratio: number): number {
+    return ratio >= 0.85 ? STATUS.danger : ratio >= 0.6 ? STATUS.warn : STATUS.ok
+  }
+
+  private refreshReadouts(): void {
+    for (const chip of this.goalChips) {
+      const goal = this.state.level.goal.find(g => g.color === chip.color)
+      if (!goal) continue
+      const got = Math.min(this.clearedView[chip.color], goal.count)
+      chip.text.setText(`${got}/${goal.count}`)
+      chip.text.setColor(hex(got >= goal.count ? STATUS.ok : GROUND.ink))
+    }
+
+    const used = this.cubeViews.size
+    const usable = usableCapacity(this.state)
+    const free = Math.max(0, usable - used)
+    const ratio = usable > 0 ? Phaser.Math.Clamp(used / usable, 0, 1) : 0
+    const color = this.pressureColor(ratio)
+
+    // Redrawn only when the free count actually moves, not every frame.
+    if (free !== this.lastFreeShown) {
+      const wasSet = this.lastFreeShown >= 0
+      this.lastFreeShown = free
+
+      const c = this.beltCentre
+      const g = this.gaugeG
+      if (g) {
+        const radius = 104
+        const start = Phaser.Math.DegToRad(132)
+        const sweep = Phaser.Math.DegToRad(276)
+        g.clear()
+        g.lineStyle(12, MACHINE.casingDark, 0.3)
+        g.beginPath()
+        g.arc(c.x, c.y + 6, radius, start, start + sweep, false)
+        g.strokePath()
+        if (ratio > 0) {
+          g.lineStyle(12, color, 1)
+          g.beginPath()
+          g.arc(c.x, c.y + 6, radius, start, start + sweep * ratio, false)
+          g.strokePath()
+        }
+      }
+
+      this.freeNumber?.setText(String(free))
+      this.freeNumber?.setColor(hex(ratio >= 0.6 ? color : GROUND.ink))
+      if (wasSet && this.freeNumber) this.p.anim.punch(this.freeNumber, 1.14)
+    }
+
+    this.beltCaption?.setText(`${used} / ${usable} ON BELT`)
+  }
+
+  // ── Header ──────────────────────────────────────────────────────────────────
+
+  private buildHeader(): void {
+    const t = this.t
+    const safe = this.p.layout.safeRect
+    const level = this.state.level
+    const cx = this.p.layout.width / 2
+
+    const title = this.add.text(cx, safe.y + 76, `LEVEL ${level.id}`,
+      this.p.text('heading', GROUND.ink)).setOrigin(0.5).setDepth(DEPTH.hud)
+    this.hud.push(title)
+
+    // Position within the current block of five. Levels are grouped in fives
+    // and the first five are the showcase, so the block is the unit that means
+    // something to the player.
+    const inBlock = this.levelIndex % 5
+    this.levelDots = this.p.ui.createDots({
+      x: cx, y: safe.y + 136,
+      count: 5, active: inBlock + 1,
+      size: 18, gap: 18,
+      color: MACHINE.accent,
+      emptyColor: 0xd9cdb8,
+    })
+    this.levelDots.container.setDepth(DEPTH.hud)
+
+    const name = this.add.text(cx, safe.y + 186, level.name.toUpperCase(),
+      this.p.text('caption', GROUND.inkSoft)).setOrigin(0.5).setDepth(DEPTH.hud)
+    this.hud.push(name)
+
+    // Goal chips: a cube face and a count. The face is the same art the belt
+    // uses, so "collect these" needs no legend.
+    const goals = level.goal
+    const chipW = 168
+    const chipGap = 20
+    const totalW = goals.length * chipW + (goals.length - 1) * chipGap
+    goals.forEach((goal, i) => {
+      const x = cx - totalW / 2 + chipW / 2 + i * (chipW + chipGap)
+      const y = safe.y + 258
+
+      const bg = bakeGraphics(this, chipW + 24, 92, (g, w, h) => {
+        drawShadow(g, w / 2, h / 2, chipW, 66, { radius: 33, dy: 5, spread: 4, alpha: 0.1 }, t)
+        drawPill(g, w / 2, h / 2, chipW, 66, {
+          fill: GROUND.card,
+          stroke: mix(GROUND.cardEdge, CUBE_SKIN[goal.color].body, 0.45),
+          strokeWidth: 3,
+        }, t)
+        drawToyCube(g, w / 2 - chipW / 2 + 36, h / 2, 42, goal.color, t)
+      }).setPosition(x, y).setDepth(DEPTH.hud)
+
+      const text = this.add.text(x + 30, y, `0/${goal.count}`,
+        this.p.text('caption', GROUND.ink)).setOrigin(0.5).setDepth(DEPTH.hud + 1)
+
+      this.hud.push(bg, text)
+      this.goalChips.push({ bg, text, color: goal.color })
+    })
+
+    // Restart, top-right, clear of DebugOverlay's top-left corner.
+    const restart = this.p.ui.createIcon({
+      x: this.p.layout.safeRight(-76),
+      y: safe.y + 86,
+      size: 68,
+      background: GROUND.card,
+      backgroundAlpha: 1,
+      radius: t.radius.pill,
+      onPress: () => { if (!this.busy) this.loadLevel(this.levelIndex) },
+      draw: (g, size) => {
+        const r = size * 0.3
+        g.lineStyle(size * 0.13, GROUND.inkSoft, 1)
+        g.beginPath()
+        g.arc(0, 0, r, Phaser.Math.DegToRad(55), Phaser.Math.DegToRad(315), false)
+        g.strokePath()
+        const a = Phaser.Math.DegToRad(55)
+        const hx = Math.cos(a) * r
+        const hy = Math.sin(a) * r
+        g.fillStyle(GROUND.inkSoft, 1)
+        g.fillTriangle(
+          hx + size * 0.15, hy + size * 0.02,
+          hx - size * 0.05, hy - size * 0.12,
+          hx - size * 0.09, hy + size * 0.14,
+        )
+      },
+    })
+    restart.container.setDepth(DEPTH.hud)
+    this.hud.push(restart.container)
+  }
+
   // ── Cubes ───────────────────────────────────────────────────────────────────
 
   /**
-   * One shared texture per (colour, frozen) pair rather than a live Graphics
-   * per cube. Thirteen cubes on a belt is thirteen Graphics re-tessellating a
-   * rounded rect, a sheen, a bevel and a frost overlay every single frame.
+   * One shared texture per colour rather than a live Graphics per cube. A cube
+   * costs seven fills to draw; thirteen of them re-tessellating every frame is
+   * the single most expensive thing a board like this can do.
    */
-  private cubeTextureKey(color: CubeColor, frozen: boolean): string {
+  private cubeTextureKey(color: CubeColor): string {
     const s = this.cubeSize
-    const key = `ls_cube_${color}_${frozen ? 'ice' : 'raw'}_${s}`
+    const key = `ls_cube_${color}_${s}`
     if (!this.textures.exists(key)) {
-      const t = this.t
-      const fill = CUBE_FILL[color]
-      bakeTexture(this, key, s + 8, s + 8, (g, w, h) => {
-        drawGameTile(g, w / 2, h / 2, s, {
-          fill,
-          radius: t.radius.md,
-          stroke: shade(fill, -0.2),
-          strokeWidth: t.stroke.thin,
-        }, t)
-        if (frozen) {
-          // Frost sheet plus a rime edge. The cube colour still reads through,
-          // because the player must know what is frozen, not just that it is.
-          g.fillStyle(0xbfe6ff, 0.42)
-          g.fillRoundedRect(w / 2 - s / 2, h / 2 - s / 2, s, s, t.radius.md)
-          drawHighlight(g, w / 2, h / 2, s, s, t.radius.md, 0.22, t)
-          g.lineStyle(5, 0xe4f5ff, 0.9)
-          g.strokeRoundedRect(w / 2 - s / 2, h / 2 - s / 2, s, s, t.radius.md)
-        }
+      bakeTexture(this, key, s + 10, s + 10, (g, w, h) => {
+        drawToyCube(g, w / 2, h / 2, s, color, this.t)
+      })
+      this.ownedTextures.add(key)
+    }
+    return key
+  }
+
+  private frostTextureKey(stage: 0 | 1 | 2): string {
+    const s = this.cubeSize
+    const key = `ls_frost_${stage}_${s}`
+    if (!this.textures.exists(key)) {
+      bakeTexture(this, key, s + 24, s + 24, (g, w, h) => {
+        drawIceShell(g, w / 2, h / 2, s, stage)
       })
       this.ownedTextures.add(key)
     }
@@ -628,9 +799,9 @@ export class LoopSortScene extends Phaser.Scene {
     const s = this.cubeSize
     const key = `ls_cubeshadow_${s}`
     if (!this.textures.exists(key)) {
-      const pad = 34
+      const pad = 40
       bakeTexture(this, key, s + pad * 2, s + pad * 2, (g, w, h) => {
-        drawShadow(g, w / 2, h / 2, s, s, { radius: this.t.radius.md }, this.t)
+        drawShadow(g, w / 2, h / 2, s, s, { radius: s * 0.27 }, this.t)
       })
       this.ownedTextures.add(key)
     }
@@ -639,30 +810,41 @@ export class LoopSortScene extends Phaser.Scene {
 
   private createCubeView(id: string, color: CubeColor, at: Point, frozen: boolean): CubeView {
     const shadow = this.add.image(at.x, at.y, this.cubeShadowKey()).setDepth(DEPTH.shadow)
-    const g = this.add.image(at.x, at.y, this.cubeTextureKey(color, frozen)).setDepth(DEPTH.cube)
+    const g = this.add.image(at.x, at.y, this.cubeTextureKey(color)).setDepth(DEPTH.cube)
     const view: CubeView = { g, shadow, color }
+    if (frozen) {
+      view.frost = this.add.image(at.x, at.y, this.frostTextureKey(0)).setDepth(DEPTH.cube + 1)
+    }
     this.cubeViews.set(id, view)
     return view
   }
 
+  /** Keeps a cube's shadow and frost locked to its body. */
+  private syncCube(v: CubeView): void {
+    v.shadow.setPosition(v.g.x, v.g.y)
+    v.frost?.setPosition(v.g.x, v.g.y)
+  }
+
   private spawnInitialCubes(): void {
-    const views: Phaser.GameObjects.GameObject[] = []
+    const bodies: Phaser.GameObjects.GameObject[] = []
     for (let i = 0; i < this.state.cells.length; i++) {
       const cube = this.state.cells[i]
       if (!cube) continue
       const v = this.createCubeView(cube.id, cube.color, this.slots[i], cube.frozen)
       v.shadow.setAlpha(0)
-      views.push(v.g)
+      v.frost?.setAlpha(0)
+      bodies.push(v.g)
       this.tweens.add({
-        targets: v.shadow, alpha: 1,
-        duration: this.t.duration.normal, delay: views.length * 55,
+        targets: [v.shadow, ...(v.frost ? [v.frost] : [])],
+        alpha: 1,
+        duration: this.t.duration.normal,
+        delay: bodies.length * 60,
       })
     }
-    // The board arrives as a sequence rather than all at once — it reads as a
-    // machine loading, and it shows the belt's direction before the first tap.
-    this.p.anim.stagger(views, 55)
+    // The board loads as a sequence, which shows the belt's direction before
+    // the player has tapped anything.
+    this.p.anim.stagger(bodies, 60)
   }
-
 
   // ── Obstacles ───────────────────────────────────────────────────────────────
 
@@ -674,40 +856,49 @@ export class LoopSortScene extends Phaser.Scene {
   }
 
   /**
-   * "Clearing N of this colour opens me" — a colour dot and a count on a chip,
-   * pushed OUTSIDE the belt along the outward normal. Sitting it on top of the
-   * obstacle made it unreadable against the slats, and the unlock condition is
-   * the only thing the player can act on.
+   * "Clearing N of this colour opens me", as a chip pushed outside the belt.
+   * Sitting it on the obstacle made it unreadable, and the unlock condition is
+   * the only thing about an obstacle the player can act on.
    */
-  private unlockCaption(
+  private unlockChip(
     at: Point, color: CubeColor, count: number, extra = 0,
   ): Phaser.GameObjects.GameObject[] {
     const t = this.t
     const dx = at.x - this.beltCentre.x
     const dy = at.y - this.beltCentre.y
     const len = Math.hypot(dx, dy) || 1
-    const push = this.cubeSize / 2 + 46 + extra
-    const chipW = 96
-    // Clamped into the safe rect: an obstacle on the right-hand straight pushes
-    // its chip clean off a 1080-wide screen otherwise.
-    const safe = this.p.layout.safeRect
-    const x = Phaser.Math.Clamp(
-      at.x + (dx / len) * push, safe.x + chipW / 2 + 12, safe.x + safe.width - chipW / 2 - 12)
-    const y = Phaser.Math.Clamp(
-      at.y + (dy / len) * push, safe.y + 40, safe.y + safe.height - 40)
+    const push = this.cubeSize / 2 + 52 + extra
+    const chipW = 104
 
-    const bg = bakeGraphics(this, chipW + 16, 60, (g, w, h) => {
-      drawPill(g, w / 2, h / 2, chipW, 46, {
-        fill: shade(t.colors.background, 0.04),
-        stroke: mix(t.colors.border, CUBE_FILL[color], 0.6),
-        strokeWidth: 2,
+    const safe = this.p.layout.safeRect
+    const minX = safe.x + chipW / 2 + 14
+    const maxX = safe.x + safe.width - chipW / 2 - 14
+
+    let x = at.x + (dx / len) * push
+    let y = at.y + (dy / len) * push
+
+    // An obstacle on a left or right straight pushes its chip off-screen, and
+    // clamping alone slides it back on top of the obstacle it labels. Drop it
+    // below the slot instead, where there is always room.
+    if (x < minX || x > maxX) {
+      x = at.x
+      y = at.y + this.cubeSize / 2 + 46
+    }
+    x = Phaser.Math.Clamp(x, minX, maxX)
+    y = Phaser.Math.Clamp(y, safe.y + 44, safe.y + safe.height - 44)
+
+    const bg = bakeGraphics(this, chipW + 20, 68, (g, w, h) => {
+      drawShadow(g, w / 2, h / 2, chipW, 52, { radius: 26, dy: 4, spread: 3, alpha: 0.12 }, t)
+      drawPill(g, w / 2, h / 2, chipW, 52, {
+        fill: GROUND.card,
+        stroke: mix(GROUND.cardEdge, CUBE_SKIN[color].body, 0.55),
+        strokeWidth: 3,
       }, t)
-      g.fillStyle(CUBE_FILL[color], 1)
-      g.fillRoundedRect(w / 2 - chipW / 2 + 12, h / 2 - 10, 20, 20, 5)
+      drawToyCube(g, w / 2 - chipW / 2 + 26, h / 2, 32, color, t)
     }).setPosition(x, y).setDepth(DEPTH.obstacle + 1)
 
-    const txt = this.add.text(x + 14, y, String(count),
-      this.p.text('caption', t.colors.text)).setOrigin(0.5).setDepth(DEPTH.obstacle + 2)
+    const txt = this.add.text(x + 20, y, String(count),
+      this.p.text('caption', GROUND.ink)).setOrigin(0.5).setDepth(DEPTH.obstacle + 2)
 
     return [bg, txt]
   }
@@ -718,45 +909,46 @@ export class LoopSortScene extends Phaser.Scene {
     const parts: Phaser.GameObjects.GameObject[] = []
 
     if (o.kind === 'curtain') {
-      // A hanging shutter: slats, not a translucent purple wash.
+      // A roller shutter. Origin is the TOP edge so it can roll up on open.
       for (let i = o.from; i <= o.to && i < this.slots.length; i++) {
         const p = this.slots[i]
-        const img = bakeGraphics(this, s + 24, s + 24, (g, w, h) => {
-          const x = w / 2
-          const y = h / 2
-          drawRoundedCard(g, x, y, s + 14, s + 14, {
-            fill: 0x6a4fc4, radius: t.radius.md + 4,
-            stroke: 0xa88cf0, strokeWidth: t.stroke.thin,
+        const boxH = s + 28
+        const img = bakeGraphics(this, s + 28, boxH, (g, w, h) => {
+          drawRoundedCard(g, w / 2, h / 2, s + 18, s + 18, {
+            fill: OBSTACLE.curtain, radius: s * 0.27 + 5,
+            stroke: OBSTACLE.curtainDark, strokeWidth: 4,
+            highlight: 0.22, bevel: 0.1,
           }, t)
-          g.lineStyle(3, 0x1d1436, 0.35)
+          g.lineStyle(4, OBSTACLE.curtainSlat, 0.45)
           for (let k = 1; k < 5; k++) {
-            const ly = y - (s + 14) / 2 + ((s + 14) / 5) * k
-            g.lineBetween(x - (s + 14) / 2 + 6, ly, x + (s + 14) / 2 - 6, ly)
+            const ly = h / 2 - (s + 18) / 2 + ((s + 18) / 5) * k
+            g.lineBetween(w / 2 - (s + 18) / 2 + 8, ly, w / 2 + (s + 18) / 2 - 8, ly)
           }
-        }).setPosition(p.x, p.y).setDepth(DEPTH.obstacle)
+        })
+        img.setOrigin(0.5, 0).setPosition(p.x, p.y - boxH / 2).setDepth(DEPTH.obstacle)
         parts.push(img)
       }
       const head = this.slots[Math.floor((o.from + o.to) / 2)] ?? this.slots[o.from]
-      if (head) parts.push(...this.unlockCaption(head, o.requiredColor, o.requiredCount))
+      if (head) parts.push(...this.unlockChip(head, o.requiredColor, o.requiredCount))
 
     } else if (o.kind === 'ice') {
-      // The frozen look is on the cube texture itself; this is the frost halo.
+      // The frost sheet itself lives on the cube view; this is the frame around
+      // it, which is what shakes and cracks.
       const p = this.slots[o.slot]
       if (p) {
-        const img = bakeGraphics(this, s + 60, s + 60, (g, w, h) => {
+        const img = bakeGraphics(this, s + 72, s + 72, (g, w, h) => {
           const x = w / 2
           const y = h / 2
-          g.lineStyle(6, 0xbfe6ff, 0.8)
-          g.strokeRoundedRect(x - s / 2 - 12, y - s / 2 - 12, s + 24, s + 24, t.radius.md + 8)
-          // Four frost spurs on the corners.
-          g.lineStyle(5, 0xe4f5ff, 0.75)
-          const e = s / 2 + 12
+          g.lineStyle(7, OBSTACLE.iceRim, 0.85)
+          g.strokeRoundedRect(x - s / 2 - 14, y - s / 2 - 14, s + 28, s + 28, s * 0.27 + 10)
+          g.lineStyle(5, OBSTACLE.iceDeep, 0.8)
+          const e = s / 2 + 14
           for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
-            g.lineBetween(x + sx * e, y + sy * e, x + sx * (e + 14), y + sy * (e + 14))
+            g.lineBetween(x + sx * e, y + sy * e, x + sx * (e + 16), y + sy * (e + 16))
           }
         }).setPosition(p.x, p.y).setDepth(DEPTH.obstacle)
         parts.push(img)
-        parts.push(...this.unlockCaption(p, o.requiredColor, o.requiredCount, 12))
+        parts.push(...this.unlockChip(p, o.requiredColor, o.requiredCount, 14))
       }
 
     } else if (o.kind === 'barrier') {
@@ -765,37 +957,48 @@ export class LoopSortScene extends Phaser.Scene {
       if (a && b) {
         const mx = (a.x + b.x) / 2
         const my = (a.y + b.y) / 2
+        // Normal to travel: a wall sits ACROSS the lane.
         const ang = Math.atan2(b.y - a.y, b.x - a.x) + Math.PI / 2
-        const len = s * 1.15
-        const img = bakeGraphics(this, len + 40, 60, (g, w, h) => {
-          // A bolted gate, drawn horizontally and rotated into place.
-          drawRoundedCard(g, w / 2, h / 2, len, 26, {
-            fill: 0xff9f43, radius: 8,
-            stroke: shade(0xff9f43, -0.22), strokeWidth: t.stroke.thin,
+        const len = s * 1.3
+        const img = bakeGraphics(this, len + 50, 74, (g, w, h) => {
+          drawShadow(g, w / 2, h / 2, len, 30, { radius: 15, dy: 5, spread: 3, alpha: 0.16 }, t)
+          drawRoundedCard(g, w / 2, h / 2, len, 30, {
+            fill: OBSTACLE.barrier, radius: 15,
+            stroke: OBSTACLE.barrierDark, strokeWidth: 4,
+            highlight: 0.3, bevel: 0.12,
           }, t)
-          g.fillStyle(shade(0xff9f43, -0.3), 1)
-          g.fillCircle(w / 2 - len / 2 + 14, h / 2, 6)
-          g.fillCircle(w / 2 + len / 2 - 14, h / 2, 6)
+          // Bolt heads: a mechanical part, not a painted line.
+          g.fillStyle(OBSTACLE.barrierDark, 0.85)
+          g.fillCircle(w / 2 - len / 2 + 17, h / 2, 7)
+          g.fillCircle(w / 2 + len / 2 - 17, h / 2, 7)
+          g.fillStyle(0xffffff, 0.5)
+          g.fillCircle(w / 2 - len / 2 + 17, h / 2 - 2, 3)
+          g.fillCircle(w / 2 + len / 2 - 17, h / 2 - 2, 3)
         }).setPosition(mx, my).setDepth(DEPTH.obstacle)
-        // The gate is baked lying along local +x and rotated onto `ang`, which
-        // is the belt's normal — i.e. ACROSS the lane, which is what a wall is.
         img.setRotation(ang)
         parts.push(img)
-        parts.push(...this.unlockCaption({ x: mx, y: my }, o.requiredColor, o.requiredCount, 10))
+        parts.push(...this.unlockChip({ x: mx, y: my }, o.requiredColor, o.requiredCount, 34))
       }
 
     } else {
-      // Hidden: an unmarked crate over the slot.
+      // Hidden: an unmarked wooden crate over the slot.
       for (let i = o.from; i <= o.to && i < this.slots.length; i++) {
         const p = this.slots[i]
-        const img = bakeGraphics(this, s + 20, s + 20, (g, w, h) => {
-          drawGameTile(g, w / 2, h / 2, s + 10, {
-            fill: 0x3c4468, radius: t.radius.md,
-            stroke: 0x5a6494, strokeWidth: t.stroke.thin,
+        const img = bakeGraphics(this, s + 34, s + 34, (g, w, h) => {
+          drawShadow(g, w / 2, h / 2, s + 14, s + 14, { radius: s * 0.27, dy: 6, spread: 4, alpha: 0.16 }, t)
+          drawRoundedCard(g, w / 2, h / 2, s + 14, s + 14, {
+            fill: OBSTACLE.crate, radius: s * 0.27,
+            stroke: OBSTACLE.crateDark, strokeWidth: 4,
+            highlight: 0.26, bevel: 0.1,
           }, t)
+          // Crate battens.
+          g.lineStyle(6, OBSTACLE.crateDark, 0.5)
+          g.lineBetween(w / 2 - s * 0.4, h / 2 - s * 0.4, w / 2 + s * 0.4, h / 2 + s * 0.4)
+          g.lineBetween(w / 2 + s * 0.4, h / 2 - s * 0.4, w / 2 - s * 0.4, h / 2 + s * 0.4)
         }).setPosition(p.x, p.y).setDepth(DEPTH.obstacle)
         parts.push(img)
-        const q = this.add.text(p.x, p.y, '?', this.p.text('heading', 0xaab3e0))
+
+        const q = this.add.text(p.x, p.y, '?', this.p.text('heading', 0xfff6e6))
           .setOrigin(0.5).setDepth(DEPTH.obstacle + 1)
         parts.push(q)
       }
@@ -803,239 +1006,150 @@ export class LoopSortScene extends Phaser.Scene {
     return parts
   }
 
+  /**
+   * Obstacle state changes are the slowest, loudest thing in the scene, because
+   * they are the only events that change what the board can hold. Each kind
+   * gets its own three-beat sequence: react, break, reveal.
+   */
   private animObstacle(id: string, became: 'open' | 'broken' | 'revealed' | 'unlocked'): void {
     const view = this.obstacleViews.get(id)
     const def = this.state.level.obstacles.find(o => o.id === id)
     if (!view || !def) return
+    const token = this.runToken
 
     let at: Point = this.beltCentre
     if (def.kind === 'ice') at = this.slots[def.slot] ?? this.beltCentre
     else if (def.kind === 'barrier') at = this.slots[def.at] ?? this.beltCentre
     else at = this.slots[def.from] ?? this.beltCentre
 
-    // Unlocking space is the biggest thing that happens on an obstacle level,
-    // so it gets the loudest per-event feedback in the scene.
-    this.p.juice.destroy(at.x, at.y, { color: this.t.colors.accent, intensity: 'medium' })
-    this.p.vfx.ring(at.x, at.y, this.cubeSize * 0.8, { color: this.t.colors.accent })
+    this.sfx('destroy')
+    this.obstacleViews.delete(id)
 
-    this.tweens.add({
-      targets: view.parts,
-      alpha: 0,
-      scaleX: became === 'broken' ? 1.3 : 1.12,
-      scaleY: became === 'broken' ? 1.3 : 1.12,
-      duration: OBSTACLE_MS,
-      ease: this.t.ease.out,
-      onComplete: () => {
-        for (const p of view.parts) p.destroy()
-        this.obstacleViews.delete(id)
-      },
-    })
+    // Beat 1 — the whole thing shudders. Same for every kind: something is
+    // about to give.
+    for (const part of view.parts) {
+      const px = (part as unknown as { x: number }).x
+      this.tweens.add({
+        targets: part, x: px + 5,
+        duration: 45, yoyo: true, repeat: 2, ease: 'Sine.InOut',
+        onComplete: () => { (part as unknown as { x: number }).x = px },
+      })
+    }
+
+    const finish = (): void => {
+      for (const p of view.parts) p.destroy()
+    }
+
+    if (def.kind === 'curtain') {
+      // Beat 2 — the shutter rolls up, slat by slat.
+      this.time.delayedCall(150, () => {
+        if (token !== this.runToken) return
+        view.parts.forEach((part, i) => {
+          this.tweens.add({
+            targets: part,
+            scaleY: 0, alpha: 0,
+            duration: OBSTACLE_MS * 0.55,
+            delay: i * 55,
+            ease: 'Back.In',
+          })
+        })
+        this.p.vfx.dust(at.x, at.y, { color: OBSTACLE.curtainDark, intensity: 'medium' })
+      })
+      this.time.delayedCall(OBSTACLE_MS, () => { if (token === this.runToken) finish() })
+
+    } else if (def.kind === 'ice') {
+      // Beat 2 — the frost cracks in two stages, then shatters.
+      const frozen = [...this.cubeViews.values()].filter(v => v.frost)
+      this.time.delayedCall(130, () => {
+        if (token !== this.runToken) return
+        for (const v of frozen) v.frost?.setTexture(this.frostTextureKey(1))
+        this.p.vfx.spark(at.x, at.y, { color: OBSTACLE.iceRim, intensity: 'small', distance: 60 })
+      })
+      this.time.delayedCall(260, () => {
+        if (token !== this.runToken) return
+        for (const v of frozen) {
+          v.frost?.setTexture(this.frostTextureKey(2))
+          if (v.frost) this.p.anim.punch(v.frost, 1.08)
+        }
+      })
+      this.time.delayedCall(390, () => {
+        if (token !== this.runToken) return
+        // Beat 3 — it breaks, the cube underneath is revealed and reacts.
+        this.p.vfx.shards(at.x, at.y, { color: OBSTACLE.ice, intensity: 'medium' })
+        this.p.vfx.ring(at.x, at.y, this.cubeSize * 0.7, { color: OBSTACLE.iceRim })
+        for (const v of frozen) {
+          this.tweens.killTweensOf(v.frost!)
+          v.frost!.destroy()
+          v.frost = undefined
+          this.p.anim.squash(v.g, 0.18)
+        }
+        this.p.vfx.screenShake(2, 130)
+        finish()
+      })
+
+    } else if (def.kind === 'barrier') {
+      // Beat 2 — the bolts release and the gate retracts into the rails.
+      this.time.delayedCall(170, () => {
+        if (token !== this.runToken) return
+        this.p.vfx.spark(at.x, at.y, { color: OBSTACLE.barrier, intensity: 'medium', distance: 90 })
+        this.tweens.add({
+          targets: view.parts[0],
+          scaleX: 0,
+          duration: OBSTACLE_MS * 0.5,
+          ease: 'Back.In',
+        })
+        this.tweens.add({
+          targets: view.parts.slice(1),
+          alpha: 0,
+          duration: OBSTACLE_MS * 0.4,
+        })
+      })
+      this.time.delayedCall(OBSTACLE_MS, () => {
+        if (token !== this.runToken) return
+        this.p.vfx.ring(at.x, at.y, this.cubeSize * 0.8, { color: OBSTACLE.barrier })
+        finish()
+      })
+
+    } else {
+      // Hidden — the crate lifts off and the contents are revealed. This is a
+      // discovery, so it pops upward rather than fading out.
+      this.time.delayedCall(140, () => {
+        if (token !== this.runToken) return
+        this.tweens.add({
+          targets: view.parts,
+          y: `-=${this.cubeSize * 0.7}`,
+          alpha: 0,
+          scaleX: 1.16, scaleY: 1.16,
+          angle: 9,
+          duration: OBSTACLE_MS * 0.6,
+          ease: 'Back.In',
+          onComplete: finish,
+        })
+        this.p.vfx.spark(at.x, at.y, { color: MACHINE.accent, intensity: 'medium' })
+        this.p.vfx.ring(at.x, at.y, this.cubeSize * 0.7, { color: MACHINE.accent })
+        this.p.vfx.dust(at.x, at.y, { color: OBSTACLE.crateDark })
+      })
+    }
 
     if (became === 'open') {
       this.openCurtains.add(id)
-      this.drawSockets()
-    }
-    if (became === 'broken') {
-      // The cube stops being ice; swap it to the unfrozen texture.
-      for (const [cid, v] of this.cubeViews) {
-        const live = this.state.cells.find(c => c?.id === cid)
-        if (live && !live.frozen) {
-          v.g.setTexture(this.cubeTextureKey(v.color, false))
-          this.p.anim.punch(v.g, 1.18)
-        }
-      }
+      // Redraw the sockets only after the shutter has actually gone, or the
+      // slots brighten under a curtain that is still on screen.
+      this.time.delayedCall(OBSTACLE_MS * 0.6, () => {
+        if (token === this.runToken) this.drawSockets()
+      })
     }
     this.refreshReadouts()
   }
 
-  // ── Header ──────────────────────────────────────────────────────────────────
-
-  private buildHeader(): void {
-    const t = this.t
-    const safe = this.p.layout.safeRect
-    const level = this.state.level
-    const cx = this.p.layout.width / 2
-
-    // Level chip + name on one line: a number badge carries the progression,
-    // which three stacked centred strings did not.
-    const chip = this.p.ui.createBadge({
-      x: cx, y: safe.y + 72,
-      text: `LEVEL ${level.id}  ·  ${this.levelIndex + 1}/${LEVELS.length}`,
-      textScale: 'tiny',
-      color: shade(t.colors.surface, 0.02),
-      textColor: hex(t.colors.accent),
-      paddingX: 30, height: 52,
-    })
-    chip.container.setDepth(DEPTH.hud)
-    this.hud.push(chip.container)
-
-    const title = this.add.text(cx, safe.y + 138, level.name.toUpperCase(),
-      this.p.text('subheading', t.colors.text)).setOrigin(0.5).setDepth(DEPTH.hud)
-    this.hud.push(title)
-
-    const teaches = this.add.text(cx, safe.y + 196, level.teaches, {
-      ...this.p.text('caption', mix(t.colors.muted, t.colors.background, 0.15)),
-      align: 'center',
-      wordWrap: { width: safe.width - 180 },
-    }).setOrigin(0.5).setDepth(DEPTH.hud)
-    this.hud.push(teaches)
-
-    // Restart, top-right, clear of DebugOverlay's top-left corner.
-    const restart = this.p.ui.createIcon({
-      x: this.p.layout.safeRight(-70),
-      y: safe.y + 82,
-      size: 70,
-      background: shade(t.colors.surface, 0.02),
-      backgroundAlpha: 1,
-      radius: t.radius.pill,
-      onPress: () => { if (!this.busy) this.loadLevel(this.levelIndex) },
-      draw: (g, size) => {
-        const r = size * 0.3
-        g.lineStyle(size * 0.12, t.colors.muted, 1)
-        g.beginPath()
-        g.arc(0, 0, r, Phaser.Math.DegToRad(55), Phaser.Math.DegToRad(315), false)
-        g.strokePath()
-        const a = Phaser.Math.DegToRad(55)
-        const hx = Math.cos(a) * r
-        const hy = Math.sin(a) * r
-        g.fillStyle(t.colors.muted, 1)
-        g.fillTriangle(
-          hx + size * 0.14, hy + size * 0.02,
-          hx - size * 0.05, hy - size * 0.11,
-          hx - size * 0.09, hy + size * 0.13,
-        )
-      },
-    })
-    restart.container.setDepth(DEPTH.hud)
-    this.hud.push(restart.container)
-  }
-
-  // ── Centre dashboard ────────────────────────────────────────────────────────
-
-  /**
-   * Goals and remaining capacity, inside the loop.
-   *
-   * They used to sit in a stack above the belt while ~700px of the ring's
-   * interior stayed empty. Both readouts describe the belt, so they belong at
-   * the thing they describe — and the player's eyes are already there.
-   */
-  private buildDashboard(): void {
-    const t = this.t
-    const c = this.beltCentre
-
-    const goalCap = this.add.text(c.x, c.y - 196, 'GOAL',
-      this.p.text('caption', mix(t.colors.muted, t.colors.background, 0.3)))
-      .setOrigin(0.5).setDepth(DEPTH.dash)
-    this.dash.push(goalCap)
-
-    // Goal chips — one per colour, showing cleared/required.
-    const goals = this.state.level.goal
-    const chipW = 162
-    const chipGap = 20
-    const totalW = goals.length * chipW + (goals.length - 1) * chipGap
-    goals.forEach((goal, i) => {
-      const x = c.x - totalW / 2 + chipW / 2 + i * (chipW + chipGap)
-      const y = c.y - 126
-
-      const bg = bakeGraphics(this, chipW + 20, 84, (g, w, h) => {
-        drawPill(g, w / 2, h / 2, chipW, 64, {
-          fill: shade(t.colors.surface, 0.02),
-          stroke: mix(t.colors.border, CUBE_FILL[goal.color], 0.5),
-          strokeWidth: t.stroke.thin,
-        }, t)
-        g.fillStyle(CUBE_FILL[goal.color], 1)
-        g.fillRoundedRect(w / 2 - chipW / 2 + 16, h / 2 - 15, 30, 30, 8)
-        drawHighlight(g, w / 2 - chipW / 2 + 31, h / 2, 30, 30, 8, 0.2, t)
-      }).setPosition(x, y).setDepth(DEPTH.dash)
-
-      const text = this.add.text(x + 22, y, `0/${goal.count}`,
-        this.p.text('caption', t.colors.text)).setOrigin(0.5).setDepth(DEPTH.dash + 1)
-
-      this.dash.push(bg, text)
-      this.goalChips.push({ bg, text, color: goal.color })
-    })
-
-    // Capacity gauge. Drawn as an arc because the ring already is one, and
-    // because "how much room is left" is the question the whole level asks.
-    this.gaugeG = this.add.graphics().setDepth(DEPTH.dash)
-    this.dash.push(this.gaugeG)
-
-    this.freeNumber = this.add.text(c.x, c.y + 26, '0',
-      this.p.text('display', t.colors.text)).setOrigin(0.5).setDepth(DEPTH.dash + 1)
-    this.dash.push(this.freeNumber)
-
-    this.freeCaption = this.add.text(c.x, c.y + 104, 'FREE',
-      this.p.text('caption', mix(t.colors.muted, t.colors.background, 0.2)))
-      .setOrigin(0.5).setDepth(DEPTH.dash + 1)
-    this.dash.push(this.freeCaption)
-
-    this.beltCaption = this.add.text(c.x, c.y + 182, '',
-      this.p.text('caption', mix(t.colors.muted, t.colors.background, 0.35)))
-      .setOrigin(0.5).setDepth(DEPTH.dash + 1)
-    this.dash.push(this.beltCaption)
-  }
-
-  /** Amber at 60% full, red at 85% — unchanged thresholds, new presentation. */
-  private pressureColor(ratio: number): number {
-    return ratio >= 0.85 ? this.t.colors.danger
-         : ratio >= 0.6  ? this.t.colors.warning
-         : this.t.colors.success
-  }
-
-  private refreshReadouts(): void {
-    const t = this.t
-
-    for (const chip of this.goalChips) {
-      const goal = this.state.level.goal.find(g => g.color === chip.color)
-      if (!goal) continue
-      const got = Math.min(this.clearedView[chip.color], goal.count)
-      chip.text.setText(`${got}/${goal.count}`)
-      chip.text.setColor(hex(got >= goal.count ? t.colors.success : t.colors.text))
-    }
-
-    const used = this.cubeViews.size
-    const usable = usableCapacity(this.state)
-    const free = Math.max(0, usable - used)
-    const ratio = usable > 0 ? Phaser.Math.Clamp(used / usable, 0, 1) : 0
-    const color = this.pressureColor(ratio)
-
-    // The gauge is a Graphics rather than a baked image because it changes, but
-    // it is redrawn only when the free count actually moves — not per frame.
-    if (free !== this.lastFreeShown) {
-      const wasSet = this.lastFreeShown >= 0
-      this.lastFreeShown = free
-
-      const c = this.beltCentre
-      const g = this.gaugeG
-      if (g) {
-        const radius = 138
-        const start = Phaser.Math.DegToRad(135)
-        const sweep = Phaser.Math.DegToRad(270)
-        g.clear()
-        g.lineStyle(16, shade(t.colors.background, 0.05), 1)
-        g.beginPath()
-        g.arc(c.x, c.y + 20, radius, start, start + sweep, false)
-        g.strokePath()
-        if (ratio > 0) {
-          g.lineStyle(16, color, 1)
-          g.beginPath()
-          g.arc(c.x, c.y + 20, radius, start, start + sweep * ratio, false)
-          g.strokePath()
-        }
-      }
-
-      this.freeNumber?.setText(String(free))
-      this.freeNumber?.setColor(hex(color))
-      if (wasSet && this.freeNumber) this.p.anim.punch(this.freeNumber, 1.12)
-    }
-
-    this.beltCaption?.setText(`BELT  ${used} / ${usable}`)
-  }
-
   // ── Batch tray ──────────────────────────────────────────────────────────────
 
+  /**
+   * Batch cards are physical objects on the desk, not menu buttons: pressing
+   * one sinks it toward its shadow, releasing springs it back, and choosing it
+   * throws its contents at the machine.
+   */
   private buildBatchTray(): void {
-    // Rebuilt after every pick, so the old tray (label included) must go first.
     this.destroyBatchTray()
 
     const t = this.t
@@ -1043,71 +1157,106 @@ export class LoopSortScene extends Phaser.Scene {
     const offered = this.state.offered
     if (offered.length === 0) return
 
-    const trayY = safe.y + safe.height - 186
-    const maxW = safe.width - 70
+    const cardH = 196
+    const maxW = safe.width - 96
     const gap = 26
-    const cardW = Math.min(310, (maxW - gap * (offered.length - 1)) / offered.length)
-    const cardH = 200
+    const cardW = Math.min(300, (maxW - gap * (offered.length - 1)) / offered.length)
     const totalW = cardW * offered.length + gap * (offered.length - 1)
     const startX = this.p.layout.width / 2 - totalW / 2 + cardW / 2
+    const trayY = this.trayY
+
+    this.trayPlate = bakeGraphics(this, safe.width - 20, cardH + 104, (g, w, h) => {
+      drawTray(g, w / 2, h / 2, safe.width - 44, cardH + 80, t)
+    }).setPosition(this.p.layout.width / 2, trayY).setDepth(DEPTH.tray)
 
     this.trayLabel = this.add.text(
-      this.p.layout.width / 2, trayY - cardH / 2 - 52, 'CHOOSE A BATCH',
-      this.p.text('caption', mix(t.colors.muted, t.colors.background, 0.25)),
+      this.p.layout.width / 2, trayY - cardH / 2 - 76, 'CHOOSE A BATCH',
+      this.p.text('caption', GROUND.inkSoft),
     ).setOrigin(0.5).setDepth(DEPTH.hud)
+
+    const cardKey = (state: 'idle' | 'pressed'): string => {
+      const key = `ls_card_${state}_${Math.round(cardW)}_${cardH}`
+      if (!this.textures.exists(key)) {
+        bakeTexture(this, key, cardW + 60, cardH + 60, (g, w, h) => {
+          drawBatchCard(g, w / 2, h / 2, cardW, cardH, t, state)
+        })
+        this.ownedTextures.add(key)
+      }
+      return key
+    }
 
     offered.forEach((batch, i) => {
       const x = startX + i * (cardW + gap)
-      const handle = this.p.ui.createButton({
-        x, y: trayY,
-        text: '',
-        width: cardW,
-        height: cardH,
-        color: shade(t.colors.surface, 0.015),
-        radius: t.radius.lg,
-        shadow: true,
-        minTouch: 0,
-        onPress: () => this.onBatchPressed(batch.id, { x, y: trayY }),
-      })
-      handle.container.setDepth(DEPTH.hud)
 
-      // Preview crates use the same baked textures as the belt, so what you
-      // tap and what arrives are visibly the same object.
-      const mini = Math.min(64, (cardW - 48) / Math.max(batch.cubes.length, 1))
-      const spread = mini + 14
+      const idle = this.add.image(0, 0, cardKey('idle'))
+      const pressed = this.add.image(0, 0, cardKey('pressed')).setVisible(false)
+
+      // Preview cubes use the same baked textures as the belt, so what you tap
+      // and what arrives are visibly the same object.
+      const mini = Math.min(72, (cardW - 56) / Math.max(batch.cubes.length, 1))
+      const spread = mini + 16
       const originX = -((batch.cubes.length - 1) * spread) / 2
       const scale = mini / this.cubeSize
+      const previews = batch.cubes.map((color, k) =>
+        this.add.image(originX + k * spread, -14, this.cubeTextureKey(color)).setScale(scale))
 
-      batch.cubes.forEach((color, k) => {
-        const mx = originX + k * spread
-        const img = this.add.image(mx, -6, this.cubeTextureKey(color, false)).setScale(scale)
-        handle.container.add(img)
-      })
+      const chipY = cardH / 2 - 34
+      const chipKey = `ls_countchip_${batch.cubes.length}`
+      if (!this.textures.exists(chipKey)) {
+        bakeTexture(this, chipKey, 120, 60, (g, w, h) => {
+          drawPill(g, w / 2, h / 2, 92, 42, {
+            fill: 0xf0e7d7, stroke: GROUND.cardEdge, strokeWidth: 2, highlight: 0,
+          }, t)
+        })
+        this.ownedTextures.add(chipKey)
+      }
+      const chip = this.add.image(0, chipY, chipKey)
+      const chipText = this.add.text(0, chipY, `×${batch.cubes.length}`,
+        this.p.text('caption', GROUND.inkSoft)).setOrigin(0.5)
 
-      // Count chip: a 3-cube batch and a 2-cube batch must be distinguishable
-      // at a glance, because batch SIZE is the capacity decision.
-      const chipY = cardH / 2 - 36
-      const chip = bakeGraphics(this, 110, 54, (g, w, h) => {
-        drawPill(g, w / 2, h / 2, 86, 40, {
-          fill: shade(t.colors.background, 0.03),
-          stroke: t.colors.border, strokeWidth: 2,
-        }, t)
-      })
-      chip.setPosition(0, chipY)
-      handle.container.add(chip)
-      const chipText = this.add.text(0, chipY, `${batch.cubes.length} CUBES`.replace(' CUBES', '×'),
-        this.p.text('caption', t.colors.muted)).setOrigin(0.5)
-      handle.container.add(chipText)
+      const container = this.add.container(x, trayY, [idle, pressed, ...previews, chip, chipText])
+        .setSize(cardW, cardH)
+        .setDepth(DEPTH.tray + 1)
 
-      this.batchButtons.push(handle)
-      this.p.anim.slideIn(handle.container, 'bottom', 90, {
-        duration: this.t.duration.normal, delay: i * 60,
+      const sink = (down: boolean): void => {
+        idle.setVisible(!down)
+        pressed.setVisible(down)
+        this.tweens.add({
+          targets: container,
+          y: trayY + (down ? 9 : 0),
+          duration: MOTION.press,
+          ease: down ? 'Quad.Out' : 'Back.Out',
+        })
+      }
+
+      const press = makePressable(this, container, {
+        hitSize: { width: cardW, height: cardH },
+        hitPadding: 18,
+        pressScale: 0.97,
+        onPressStart: () => sink(true),
+        onCancel: () => sink(false),
+        onPress: () => {
+          sink(false)
+          this.onBatchPressed(batch.id, { x, y: trayY })
+        },
+      }, t)
+
+      this.batchCards.push({ container, idle, pressed, press, restY: trayY })
+
+      container.setAlpha(0)
+      this.tweens.add({
+        targets: container,
+        alpha: 1, y: trayY,
+        duration: this.t.duration.normal,
+        delay: i * 65,
+        ease: 'Back.Out',
       })
+      container.y = trayY + 60
     })
   }
 
   private setBatchesEnabled(enabled: boolean): void {
-    for (const b of this.batchButtons) b.setEnabled(enabled)
+    for (const c of this.batchCards) c.press.setEnabled(enabled)
   }
 
   private onBatchPressed(batchId: string, from: Point): void {
@@ -1115,7 +1264,18 @@ export class LoopSortScene extends Phaser.Scene {
     if (this.state.phase === 'LEVEL_COMPLETE' || this.state.phase === 'LEVEL_FAILED') return
 
     this.spawnFrom = from
-    this.p.juice.select()
+    this.sfx('select')
+
+    // The chosen card hands its contents over rather than just disappearing.
+    const card = this.batchCards.find(c => Math.abs(c.container.x - from.x) < 2)
+    if (card) {
+      this.tweens.add({
+        targets: card.container,
+        y: card.restY - 22, alpha: 0.35,
+        duration: this.t.duration.fast, ease: 'Quad.Out',
+      })
+    }
+
     const { next, events } = selectBatch(this.state, batchId)
     this.state = next
     this.playEvents(events)
@@ -1135,8 +1295,6 @@ export class LoopSortScene extends Phaser.Scene {
    * Plays the logic's event log as a timeline. Input stays locked for the whole
    * run. Consecutive shifts move together; cascades are staggered by chainIndex
    * so a chain reads as a sequence rather than one simultaneous pop.
-   *
-   * Structurally unchanged from the previous version — only the constants moved.
    */
   private playEvents(events: ResolveEvent[]): void {
     this.busy = true
@@ -1159,21 +1317,7 @@ export class LoopSortScene extends Phaser.Scene {
             group.push({ cubeId: s.cubeId, to: s.to })
             i++
           }
-          this.schedule(token, t, () => {
-            group.forEach((s, k) => {
-              const v = this.cubeViews.get(s.cubeId)
-              const p = this.slots[s.to]
-              // A tiny per-cube offset turns a block slide into a ripple, which
-              // is what makes "they find each other" legible.
-              if (v && p) this.tweens.add({
-                targets: [v.g, v.shadow],
-                x: p.x, y: p.y,
-                duration: SHIFT_MS,
-                delay: Math.min(k * 28, 120),
-                ease: this.t.ease.overshoot,
-              })
-            })
-          })
+          this.schedule(token, t, () => this.animShift(group))
           t += SHIFT_STEP
           break
         }
@@ -1206,7 +1350,7 @@ export class LoopSortScene extends Phaser.Scene {
 
         case 'fail': {
           const reason = e.reason
-          this.schedule(token, t, () => this.showFail(reason))
+          this.schedule(token, t + MOTION.settle, () => this.showFail(reason))
           t += CLEAR_STEP
           i++
           break
@@ -1225,9 +1369,38 @@ export class LoopSortScene extends Phaser.Scene {
   }
 
   /**
-   * The cube travels on an arc from the card the player tapped to its slot.
-   * A straight lerp from the tray to the top of the ring passes through the
-   * dashboard and reads as a glitch; the arc reads as a throw.
+   * Cubes compacting toward slot 0. A small per-cube delay turns a block slide
+   * into a ripple, which is what makes "they find each other" legible.
+   */
+  private animShift(group: Array<{ cubeId: string; to: number }>): void {
+    group.forEach((s, k) => {
+      const v = this.cubeViews.get(s.cubeId)
+      const p = this.slots[s.to]
+      if (!v || !p) return
+      const tween = this.tweens.add({
+        targets: v.g,
+        x: p.x, y: p.y,
+        duration: SHIFT_MS,
+        delay: Math.min(k * 30, 120),
+        ease: 'Back.Out',
+        easeParams: [1.1],
+        onUpdate: () => this.syncCube(v),
+        onComplete: () => {
+          v.moveTween = undefined
+          if (this.dyingViews.has(v)) return
+          this.syncCube(v)
+          this.p.anim.squash(v.g, 0.08, { duration: MOTION.land })
+        },
+      })
+      v.moveTween = tween
+    })
+    if (group.length > 0) this.sfx('move')
+  }
+
+  /**
+   * A cube travelling from the card the player tapped to its slot. It arcs:
+   * a straight lerp from the tray to the top of the ring passes through the hub
+   * and reads as a glitch, where an arc reads as a throw.
    */
   private animInsert(cubeId: string, color: CubeColor, slot: number): void {
     const to = this.slots[slot]
@@ -1235,88 +1408,151 @@ export class LoopSortScene extends Phaser.Scene {
 
     const from = this.spawnFrom
     const view = this.createCubeView(cubeId, color, from, false)
-    view.g.setScale(0.72)
+    view.g.setScale(0.55)
     view.shadow.setAlpha(0)
 
     const ctrl = {
-      x: (from.x + to.x) / 2 + (to.x - from.x) * 0.15,
-      y: Math.min(from.y, to.y) - 150,
+      x: (from.x + to.x) / 2 + (to.x - from.x) * 0.18,
+      y: Math.min(from.y, to.y) - 170,
     }
     const proxy = { k: 0 }
-    this.tweens.add({
+    view.moveTween = this.tweens.add({
       targets: proxy, k: 1,
       duration: INSERT_MS,
       ease: 'Sine.InOut',
       onUpdate: () => {
         const k = proxy.k
         const inv = 1 - k
-        const x = inv * inv * from.x + 2 * inv * k * ctrl.x + k * k * to.x
-        const y = inv * inv * from.y + 2 * inv * k * ctrl.y + k * k * to.y
-        view.g.setPosition(x, y)
-        view.shadow.setPosition(x, y)
+        view.g.setPosition(
+          inv * inv * from.x + 2 * inv * k * ctrl.x + k * k * to.x,
+          inv * inv * from.y + 2 * inv * k * ctrl.y + k * k * to.y,
+        )
+        this.syncCube(view)
       },
       onComplete: () => {
+        view.moveTween = undefined
+        // A cube can be matched mid-flight: the clear chain is already running
+        // on this image, and anim.squash would kill it and strand the cube.
+        if (this.dyingViews.has(view)) return
         view.g.setPosition(to.x, to.y)
-        view.shadow.setPosition(to.x, to.y)
-        this.p.anim.punch(view.g, 1.12, { duration: this.t.duration.fast })
+        this.syncCube(view)
+        // Impact: squash, a puff of dust, and it settles.
+        this.p.anim.squash(view.g, 0.16, { duration: MOTION.land })
+        this.p.vfx.dust(to.x, to.y + this.cubeSize * 0.42, {
+          color: MACHINE.casingLight, intensity: 'small',
+        })
       },
     })
     this.tweens.add({
       targets: view.g, scaleX: 1, scaleY: 1,
-      duration: INSERT_MS * 0.8, ease: this.t.ease.out,
+      duration: INSERT_MS * 0.7, ease: 'Back.Out',
     })
     this.tweens.add({ targets: view.shadow, alpha: 1, duration: INSERT_MS })
     this.refreshReadouts()
   }
 
+  /**
+   * The payoff. Three beats, and the animation — not a label — carries the
+   * information:
+   *
+   *   attract   the matched cubes lean into each other and brighten
+   *   hold      a beat where nothing moves, so the connection registers
+   *   pop       flash, burst, shrink out, floating count
+   *
+   * Chain depth escalates burst size, shake and text, but never past the point
+   * where the board stops being readable.
+   */
   private animClear(e: { cubeIds: string[]; color: CubeColor; slots: number[]; chainIndex: number }): void {
-    const pts: Point[] = []
+    const skin = CUBE_SKIN[e.color]
+    const views: CubeView[] = []
     for (const id of e.cubeIds) {
       const v = this.cubeViews.get(id)
       if (!v) continue
-      pts.push({ x: v.g.x, y: v.g.y })
+      views.push(v)
       this.cubeViews.delete(id)
       this.dyingViews.add(v)
-      const shadow = v.shadow
+      // Whatever the cube was doing, the match owns it now.
+      v.moveTween?.remove()
+      v.moveTween = undefined
+      this.tweens.killTweensOf(v.g)
+    }
+    if (views.length === 0) return
+
+    const cx = views.reduce((s, v) => s + v.g.x, 0) / views.length
+    const cy = views.reduce((s, v) => s + v.g.y, 0) / views.length
+    const chain = e.chainIndex
+
+    for (const v of views) {
+      const towardX = v.g.x + (cx - v.g.x) * 0.16
+      const towardY = v.g.y + (cy - v.g.y) * 0.16
+
       this.tweens.add({
+        targets: v.shadow,
+        alpha: 0,
+        duration: CLEAR_MS * 0.7,
+        delay: MOTION.attract,
+      })
+
+      this.tweens.chain({
         targets: v.g,
-        scaleX: 0.18, scaleY: 0.18, alpha: 0,
-        angle: Phaser.Math.Between(-40, 40),
-        duration: CLEAR_MS, ease: this.t.ease.in,
         onComplete: () => {
           this.dyingViews.delete(v)
           v.g.destroy()
-          shadow.destroy()
+          v.shadow.destroy()
+          v.frost?.destroy()
         },
-      })
-      this.tweens.add({ targets: shadow, alpha: 0, duration: CLEAR_MS * 0.6 })
-      // Each cube pops where it stood, so the player sees WHICH cubes matched.
-      this.p.vfx.burst(v.g.x, v.g.y, {
-        color: CUBE_FILL[e.color], intensity: 'small', distance: 120,
+        tweens: [
+          // 1. attract + swell
+          {
+            x: towardX, y: towardY, scaleX: 1.14, scaleY: 1.14,
+            duration: MOTION.attract, ease: 'Sine.Out',
+            onUpdate: () => this.syncCube(v),
+          },
+          // 2. hold, flashed white — the beat that says "connected"
+          {
+            scaleX: 1.14, scaleY: 1.14,
+            duration: MOTION.anticipate,
+            onStart: () => v.g.setTintFill(0xffffff),
+          },
+          // 3. pop
+          {
+            scaleX: 0.1, scaleY: 0.1, alpha: 0,
+            angle: Phaser.Math.Between(-35, 35),
+            duration: MOTION.clear, ease: 'Back.In',
+            onStart: () => {
+              v.g.clearTint()
+              this.p.vfx.burst(v.g.x, v.g.y, {
+                color: skin.body,
+                intensity: chain > 0 ? 'medium' : 'small',
+                distance: 150 + chain * 40,
+              })
+            },
+          },
+        ],
       })
     }
 
-    if (pts.length > 0) {
-      const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length
-      const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length
-      this.p.vfx.ring(cx, cy, this.cubeSize * 0.9, { color: CUBE_FILL[e.color] })
-      // Chain depth scales the payoff, but stays restrained.
-      if (e.chainIndex > 0) {
-        this.p.vfx.floatingText(cx, cy, `CHAIN ×${e.chainIndex + 1}`, {
-          color: this.t.colors.accent, fontSize: 56,
-        })
-        this.p.vfx.screenShake(2 + e.chainIndex, 140)
-      }
-    }
+    // Group feedback lands on the hold, not on the pop, so the two beats read
+    // as cause and effect.
+    this.time.delayedCall(MOTION.attract, () => {
+      this.p.vfx.ring(cx, cy, this.cubeSize * 0.85, { color: skin.body })
+      this.p.vfx.glow(cx, cy, this.cubeSize * 0.9, { color: skin.body })
+    })
+    this.time.delayedCall(MOTION.attract + MOTION.anticipate, () => {
+      this.p.vfx.floatingText(cx, cy - this.cubeSize * 0.2,
+        chain > 0 ? `CHAIN ×${chain + 1}` : `+${e.cubeIds.length}`,
+        { color: chain > 0 ? MACHINE.accent : skin.body, fontSize: chain > 0 ? 58 : 46 })
+      this.p.vfx.screenShake(1.5 + chain * 1.6, 110 + chain * 40)
+      this.sfx(chain > 0 ? 'chain' : 'match')
+    })
 
     this.clearedView[e.color] += e.cubeIds.length
     this.refreshReadouts()
 
-    // A goal chip that just filled should say so.
     const goal = this.state.level.goal.find(g => g.color === e.color)
     if (goal && this.clearedView[e.color] >= goal.count) {
       const chip = this.goalChips.find(c => c.color === e.color)
-      if (chip) this.p.anim.punch(chip.bg, 1.16)
+      if (chip) this.p.anim.punch(chip.bg, 1.18)
     }
   }
 
@@ -1327,33 +1563,81 @@ export class LoopSortScene extends Phaser.Scene {
     this.refreshReadouts()
   }
 
-  // ── End-of-level panels ─────────────────────────────────────────────────────
+  // ── End of level ────────────────────────────────────────────────────────────
 
+  /**
+   * The board gets a moment before the panel arrives: the remaining cubes hop
+   * in sequence, the machine throws confetti, and only then does the UI cover
+   * it. Cutting straight to a dialog throws away the payoff the player just
+   * earned.
+   */
   private showComplete(): void {
     this.setBatchesEnabled(false)
-    this.p.juice.levelComplete({
-      targets: [...this.cubeViews.values()].map(v => v.g),
+    const token = this.runToken
+    this.sfx('complete')
+
+    const bodies = [...this.cubeViews.values()].map(v => v.g)
+    bodies.forEach((b, i) => {
+      this.tweens.add({
+        targets: b, y: b.y - 26,
+        duration: 170, delay: i * 70, yoyo: true, ease: 'Sine.Out',
+        onUpdate: () => {
+          const v = [...this.cubeViews.values()].find(c => c.g === b)
+          if (v) this.syncCube(v)
+        },
+      })
     })
+    for (const c of this.chevrons) this.p.anim.punch(c, 1.5)
+
+    this.p.vfx.confetti({
+      colors: [CUBE_SKIN.red.body, CUBE_SKIN.blue.body, CUBE_SKIN.green.body,
+               CUBE_SKIN.yellow.body, MACHINE.accent],
+    })
+    this.p.vfx.ring(this.beltCentre.x, this.beltCentre.y, this.cubeSize * 1.4,
+      { color: STATUS.ok })
+    this.p.vfx.screenShake(2.5, 220)
+
     const last = this.levelIndex >= LEVELS.length - 1
-    this.buildPanel(
-      last ? 'ALL LEVELS CLEAR' : 'LEVEL COMPLETE',
-      last ? 'You reached the end of the experiment.' : `Picks used: ${this.state.picks}`,
-      last ? 'Replay' : 'Continue',
-      () => this.loadLevel(last ? 0 : this.levelIndex + 1),
-      true,
-    )
+    this.time.delayedCall(MOTION.settle + bodies.length * 40, () => {
+      if (token !== this.runToken) return
+      this.buildPanel(
+        last ? 'ALL LEVELS CLEAR' : 'LEVEL COMPLETE',
+        last ? 'You reached the end of the experiment.' : `Solved in ${this.state.picks} picks.`,
+        last ? 'Replay' : 'Next level',
+        () => this.loadLevel(last ? 0 : this.levelIndex + 1),
+        true,
+      )
+    })
   }
 
+  /**
+   * Failure is calm and explains itself. The board shakes once, the belt turns
+   * red, and the panel says which of the two failure conditions happened —
+   * "you lost" without "why" is the least useful message a puzzle can send.
+   */
   private showFail(reason: 'full' | 'noValidPlacement' | 'outOfBatches'): void {
     this.setBatchesEnabled(false)
-    const p = this.beltCentre
-    this.p.juice.fail(p.x, p.y, { intensity: 'medium' })
-    // Shake the belt itself, not just the camera — the belt is what failed.
-    for (const v of this.cubeViews.values()) this.p.anim.shake(v.g, 7)
+    const token = this.runToken
+    this.sfx('fail')
+
+    for (const v of this.cubeViews.values()) this.p.anim.shake(v.g, 6)
+    this.p.vfx.screenShake(3, 200)
+
+    // The belt itself reads as the thing that failed.
+    if (this.gaugeG) {
+      this.freeNumber?.setColor(hex(STATUS.danger))
+      this.p.anim.punch(this.freeNumber!, 1.2)
+    }
+
     const why = reason === 'outOfBatches'
-      ? 'Out of batches before the goal was met.'
-      : 'The belt filled up — no room left to place a cube.'
-    this.buildPanel('NO MORE MOVES', why, 'Retry', () => this.loadLevel(this.levelIndex), false)
+      ? 'The batch queue ran out before the goal was met.'
+      : 'The belt filled up — there was no room left to place a cube.'
+
+    this.time.delayedCall(MOTION.settle, () => {
+      if (token !== this.runToken) return
+      this.buildPanel('OUT OF ROOM', why, 'Try again',
+        () => this.loadLevel(this.levelIndex), false)
+    })
   }
 
   private buildPanel(
@@ -1362,74 +1646,74 @@ export class LoopSortScene extends Phaser.Scene {
     this.dismissPanel()
     const t = this.t
     const c = this.p.layout.center()
-    const panelW = 860
+    const panelW = Math.min(this.p.layout.width - 120, 840)
     const panelH = 560
 
-    // The tray belongs to a decision that is over. Sliding it away also stops
-    // a stale card sitting under the panel looking tappable.
-    for (const b of this.batchButtons) {
-      this.p.anim.slideOut(b.container, 'bottom', 120, { duration: t.duration.normal })
+    // The decision is over; the tray hands the screen back.
+    for (const card of this.batchCards) {
+      this.p.anim.slideOut(card.container, 'bottom', 140, { duration: t.duration.normal })
     }
     if (this.trayLabel) this.p.anim.fadeOut(this.trayLabel, { duration: t.duration.fast })
 
-    // Scrim: dims the board and swallows taps aimed at anything behind it.
     const scrim = this.add.rectangle(
       this.p.layout.width / 2, this.p.layout.height / 2,
       this.p.layout.width, this.p.layout.height,
-      t.colors.background, 1,
+      GROUND.ink, 1,
     ).setAlpha(0).setDepth(DEPTH.panel - 1).setInteractive()
     this.panelExtras.push(scrim)
-    this.tweens.add({ targets: scrim, alpha: 0.62, duration: t.duration.normal })
+    this.tweens.add({ targets: scrim, alpha: 0.42, duration: t.duration.normal })
 
     this.panel = this.p.ui.createPanel({
       x: c.x, y: c.y,
       width: panelW, height: panelH,
-      fill: t.colors.surface,
-      stroke: won ? mix(t.colors.border, t.colors.success, 0.5) : t.colors.border,
-      strokeWidth: t.stroke.thin,
+      fill: GROUND.card,
+      stroke: won ? mix(GROUND.cardEdge, STATUS.ok, 0.5) : GROUND.cardEdge,
+      strokeWidth: 3,
       radius: t.radius.lg, shadow: true,
     })
     this.panel.container.setDepth(DEPTH.panel)
 
-    const heading = this.add.text(0, -panelH / 2 + 86, title,
-      this.p.text('heading', won ? t.colors.success : t.colors.danger)).setOrigin(0.5)
+    const heading = this.add.text(0, -panelH / 2 + 92, title,
+      this.p.text('subheading', won ? STATUS.ok : GROUND.ink)).setOrigin(0.5)
     this.panel.container.add(heading)
 
     const rule = this.add.graphics()
-    rule.fillStyle(t.colors.border, 0.7)
-    rule.fillRect(-120, -panelH / 2 + 132, 240, 2)
+    rule.fillStyle(GROUND.cardEdge, 1)
+    rule.fillRect(-110, -panelH / 2 + 140, 220, 3)
     this.panel.container.add(rule)
 
-    const bodyLabel = this.add.text(c.x, c.y - 42, body, {
-      ...this.p.text('body', t.colors.muted),
+    const bodyLabel = this.add.text(c.x, c.y - 30, body, {
+      ...this.p.text('body', GROUND.inkSoft),
       align: 'center',
       wordWrap: { width: panelW - 150 },
     }).setOrigin(0.5).setDepth(DEPTH.panel + 1)
     this.panelExtras.push(bodyLabel)
 
     const primary = this.p.ui.createButton({
-      x: c.x, y: c.y + 96,
+      x: c.x, y: c.y + 110,
       text: cta,
-      width: 460, height: 130,
+      width: 440, height: 124,
       textScale: 'body',
-      color: won ? t.colors.primary : t.colors.surfaceAlt,
+      color: won ? STATUS.ok : MACHINE.accent,
+      textColor: '#ffffff',
       radius: t.radius.md, shadow: true,
       onPress: () => { if (!this.busy) onCta() },
     })
     primary.container.setDepth(DEPTH.panel + 1)
     this.panelButtons.push(primary)
 
-    const retry = this.p.ui.createButton({
-      x: c.x, y: c.y + 96 + 130 + 26,
+    const secondary = this.p.ui.createButton({
+      x: c.x, y: c.y + 110 + 124 + 26,
       text: won ? 'Replay level' : 'Back to level 1',
-      width: 460, height: 110,
+      width: 440, height: 104,
       textScale: 'small',
-      color: shade(t.colors.surface, 0.03),
+      color: 0xf0e7d7,
+      textColor: hex(GROUND.inkSoft),
       radius: t.radius.md, shadow: true,
       onPress: () => { if (!this.busy) this.loadLevel(won ? this.levelIndex : 0) },
     })
-    retry.container.setDepth(DEPTH.panel + 1)
-    this.panelButtons.push(retry)
+    secondary.container.setDepth(DEPTH.panel + 1)
+    this.panelButtons.push(secondary)
 
     this.p.anim.pop(this.panel.container)
     for (const b of this.panelButtons) {

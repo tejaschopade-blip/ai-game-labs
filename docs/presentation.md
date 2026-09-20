@@ -180,6 +180,20 @@ Returns an `Image` — one quad — and releases its texture automatically when 
 Image is destroyed. Size the canvas to include shadow offset and spread or it
 clips. `fillGradientStyle` flattens when baked, so keep gradients live.
 
+When many objects share the same art — a board of identically-drawn pieces, a
+repeated shadow — use the **named** variant instead, so one texture backs all of
+them:
+
+```ts
+const key = bakeTexture(this, `cube_${color}_${size}`, w, h, (g, w, h) => { ... })
+this.add.image(x, y, key)
+```
+
+It returns immediately if the key exists, so it is safe to call per object in a
+build loop. The caller owns the texture's lifetime: put anything that changes
+the art (size, colour, variant) in the key, and `scene.textures.remove(key)` when
+rebuilding at a different size.
+
 Measured in this repo under software rendering: the menu ran at 25fps with 11
 live card Graphics and 56fps with the same art baked; prototype 009 went from
 20fps to 36fps.
@@ -197,6 +211,8 @@ p.anim.punch(target, 1.18)            // the workhorse — use on anything acted
 p.anim.bounce(target, 14)
 p.anim.shake(target, 8)               // failure
 p.anim.wobble(target, 7)              // "no", without leaving the slot
+p.anim.squash(target, 0.14)           // impact: flatten, stretch, spring back
+p.anim.anticipate(target, 0.1, { onComplete })  // wind-up, fires on release
 p.anim.float(target)                  // looping idle drift
 p.anim.pulse(target)                  // looping attention
 p.anim.spin(target, 1)
@@ -308,8 +324,11 @@ const p = createPresentation(this, {
 })
 ```
 
-Slots: `click`, `select`, `success`, `fail`, `collect`, `impact`, `destroy`,
-`complete`.
+Slots: `click`, `select`, `move`, `match`, `chain`, `success`, `fail`,
+`collect`, `impact`, `destroy`, `complete`.
+
+`juice.play('match')` is the semantic call — the prototype names the *event*,
+and what it sounds like is a property of the sound map, not of the call site.
 
 `levelComplete` is deliberately the loudest thing in the library. Everything else
 is restrained so that it lands.
@@ -327,6 +346,11 @@ bg.destroy()
 
 Presets: `solid`, `gradient`, `softGradient`, `dots`, `grid`, `paper`, `waves`,
 `ambient`. Omitting `preset` uses the theme's default.
+
+`light: 0..1` adds a soft radial bloom behind the play area (`lightY` moves it,
+`lightColor` tints it). It is the cheapest way to make a background read as
+*composed* rather than *filled* — the board sits in a pool of light instead of
+on an even sheet. Baked, so it costs one quad.
 
 Pattern ink is theme-aware (dark on light themes, light on dark ones). The
 vignette — four edge gradients pulling the frame darker so the centre reads as
@@ -370,6 +394,7 @@ p.ui.createButton({ x, y, text, onPress, width, height, color,
 p.ui.createPanel({ x, y, width, height, title, fill, stroke, shadow })
 p.ui.createLabel({ x, y, text, textScale, color, align, outline, wordWrapWidth })
 p.ui.createBadge({ x, y, text, color })        // pill chip, sizes to its text
+p.ui.createDots({ x, y, count, active })       // progress dots, e.g. 3 of 5
 p.ui.createProgressBar({ x, y, width, value })
 p.ui.createIcon({ x, y, glyph | draw, onPress })
 p.ui.toast('Level complete!')
